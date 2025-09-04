@@ -506,7 +506,7 @@ class VexiiRiscv(CPU):
             soc.csr.add("timer0", n=3)
 
             # Add OpenSBI region.
-            soc.bus.add_region("opensbi", SoCRegion(origin=self.mem_map["main_ram"] + 0x00f0_0000, size=0x8_0000, cached=True, linker=True))
+            soc.bus.add_region("opensbi", SoCRegion(origin=self.mem_map["main_ram"] + 0x0000_0000, size=0x8_0000, cached=True, linker=True))
 
         # Define ISA.
         soc.add_config("CPU_COUNT", VexiiRiscv.soc_args.cpu_count)
