@@ -1718,6 +1718,7 @@ class LiteXSoC(SoC):
         from litedram.frontend.wishbone import LiteDRAMWishbone2Native
         from litedram.frontend.axi import LiteDRAMAXI2Native
         from litedram.frontend.bist import  LiteDRAMBISTGenerator, LiteDRAMBISTChecker
+        from litedram.frontend.ecc import LiteDRAMNativePortECC
 
         # LiteDRAM core.
         self.check_if_exists(name)
@@ -1776,7 +1777,7 @@ class LiteXSoC(SoC):
         if hasattr(self.cpu, "add_memory_buses"):
             self.cpu.add_memory_buses(
                 address_width = 32,
-                data_width    = sdram.crossbar.controller.data_width
+                data_width    = 2**int(math.log2(sdram.crossbar.controller.data_width))
             )
 
         # Connect CPU's direct memory buses to LiteDRAM --------------------------------------------
@@ -1784,8 +1785,18 @@ class LiteXSoC(SoC):
             # When CPU has at least a direct memory bus, connect them directly to LiteDRAM.
             for mem_bus in self.cpu.memory_buses:
                 # Request a LiteDRAM native port.
-                port = sdram.crossbar.get_port()
-                port.data_width = 2**int(math.log2(port.data_width)) # Round to nearest power of 2.
+                # TODO: add ECC
+                if with_ecc:
+                    ecc_port = sdram.crossbar.get_port()
+                    port = LiteDRAMNativePort(
+                        mode          = ecc_port.mode,
+                        address_width = ecc_port.address_width,
+                        data_width    = 2**int(math.log2(port.data_width)) # Round to nearest power of 2.
+                    )
+                    self.submodules += LiteDRAMNativePortECC(port, ecc_port, with_error_injection=False)
+                else:
+                    port = sdram.crossbar.get_port()
+                    port.data_width = 2**int(math.log2(port.data_width)) # Round to nearest power of 2.
 
                 # Check if bus is an AXI bus and connect it.
                 if isinstance(mem_bus, axi.AXIInterface):
