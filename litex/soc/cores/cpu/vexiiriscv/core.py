@@ -41,21 +41,21 @@ class VexiiRiscv(CPU):
     endianness           = "little"
     nop                  = "nop"
     io_regions           = {0x8000_0000: 0x8000_0000} # Origin, Length.
-    data_width           = None
+    data_width           = 64
     gcc_triple           = None
     linker_output_format = None
 
     netlist_name     = None
     # vexii params controlled by litex:
-    litedram_width   = None
+    litedram_width   = 64
     with_supervisor  = False
     with_opensbi     = False
     vexii_args       = ""
     isa_map            = {'i', 'zicsr', 'zifencei'}
     internal_mem_map   = dict()
     # vexii params received from vexii:
-    xlen               = None
-    internal_bus_width = None
+    xlen               = 64
+    internal_bus_width = 64
     with_rvc           = None
     with_rvm           = None
     with_rvf           = None
@@ -256,7 +256,7 @@ class VexiiRiscv(CPU):
         self.platform         = platform
         self.reset            = Signal()
         self.interrupt        = Signal(32)
-        self.pbus             = pbus = axi.AXILiteInterface(address_width=32, data_width=32)
+        self.pbus             = pbus = axi.AXILiteInterface(address_width=64, data_width=64)
 
         self.periph_buses     = [pbus] # Peripheral buses (Connected to main SoC's bus).
         self.memory_buses     = []           # Memory buses (Connected directly to LiteDRAM).
@@ -310,7 +310,7 @@ class VexiiRiscv(CPU):
             )
 
         if VexiiRiscv.soc_args.with_dma:
-            self.dma_bus = dma_bus = axi.AXIInterface(data_width=VexiiRiscv.internal_bus_width, address_width=32, id_width=4)
+            self.dma_bus = dma_bus = axi.AXIInterface(data_width=VexiiRiscv.internal_bus_width, address_width=64, id_width=4)
 
             self.cpu_params.update(
                 # DMA Bus.
