@@ -498,7 +498,7 @@ class SoCBusHandler(LiteXModule):
         ))
 
         return adapted_interface
-    
+
     # Add Offset ---------------------------------------------------------------------------------
     def add_offset(self, name, interface, offset):
         interface_cls = type(interface)
@@ -1981,7 +1981,105 @@ class LiteXSoC(SoC):
             add_ip_address_constants(self, "REMOTEIP", remote_ip)
         if mac_address:
             add_mac_address_constants(self, "MACADDR", mac_address)
-        
+
+
+        # Software Debug
+        if software_debug:
+            self.add_constant("ETH_UDP_TX_DEBUG")
+            self.add_constant("ETH_UDP_RX_DEBUG")
+
+        # Timing constraints
+        if with_timing_constraints:
+            eth_rx_clk = getattr(phy, "crg", phy).cd_eth_rx.clk
+            eth_tx_clk = getattr(phy, "crg", phy).cd_eth_tx.clk
+            if not isinstance(phy, LiteEthPHYModel) and not getattr(phy, "model", False):
+                self.platform.add_period_constraint(eth_rx_clk, 1e9/phy.rx_clk_freq)
+                if not eth_rx_clk is eth_tx_clk:
+                    self.platform.add_period_constraint(eth_tx_clk, 1e9/phy.tx_clk_freq)
+                    self.platform.add_false_path_constraints(self.crg.cd_sys.clk, eth_rx_clk, eth_tx_clk)
+                else:
+                    self.platform.add_false_path_constraints(self.crg.cd_sys.clk, eth_rx_clk)
+
+    # Add Ethernet ---------------------------------------------------------------------------------
+    def add_ethernet_with_dma(self, name="ethmac", phy=None, phy_cd=None, dynamic_ip=False, software_debug=False,
+        data_width              = 8,
+        nrxslots                = 2, rxslots_read_only  = True,
+        ntxslots                = 2, txslots_write_only = False,
+        full_memory_we          = False,
+        with_timestamp          = False,
+        with_timing_constraints = True,
+        local_ip                = None,
+        remote_ip               = None,
+        mac_address             = None):
+        # Imports
+        from liteeth.mac import LiteEthMAC
+        from liteeth.phy.model import LiteEthPHYModel
+
+        # MAC.
+        assert data_width in [8, 32, 64]
+        with_sys_datapath = (data_width == 32)
+        self.check_if_exists(name)
+        # if with_timestamp:
+        #     self.timer0.add_uptime()
+        bus_write = wishbone.Interface(
+            data_width = self.bus.data_width,
+            adr_width  = self.bus.get_address_width(standard="wishbone"),
+            addressing = "word",
+            mode       = "w",
+        )
+        bus_read = wishbone.Interface(
+            data_width = self.bus.data_width,
+            adr_width  = self.bus.get_address_width(standard="wishbone"),
+            addressing = "word",
+            mode       = "r",
+        )
+        ethmac = LiteEthMAC(
+            phy               = phy,
+            dw                = {8: 32, 32: 32, 64: 64}[data_width],
+            bus_write         = bus_write,
+            bus_read          = bus_read,
+            interface         = "wishbone",
+            endianness        = self.cpu.endianness,
+            nrxslots          = nrxslots, rxslots_read_only  = rxslots_read_only,
+            ntxslots          = ntxslots, txslots_write_only = txslots_write_only,
+            timestamp         = None if not with_timestamp else self.timer0.uptime_cycles,
+            full_memory_we    = full_memory_we,
+            with_preamble_crc = not software_debug,
+            with_sys_datapath = with_sys_datapath,
+            with_dma          = True)
+        if not with_sys_datapath:
+            # Use PHY's eth_tx/eth_rx clock domains.
+            if phy_cd is None:
+                eth_tx_clk_name = getattr(phy, "crg", phy).cd_eth_tx.name
+                eth_rx_clk_name = getattr(phy, "crg", phy).cd_eth_rx.name
+            else:
+                eth_tx_clk_name = phy_cd + "_tx"
+                eth_rx_clk_name = phy_cd + "_rx"
+            ethmac = ClockDomainsRenamer({
+                "eth_tx": eth_tx_clk_name,
+                "eth_rx": eth_rx_clk_name})(ethmac)
+        self.add_module(name=name, module=ethmac)
+
+        self.bus.add_master(name="ethmac_rx", master=bus_read)
+        self.bus.add_master(name="ethmac_tx", master=bus_write)
+
+        # Add IRQs (if enabled).
+        if self.irq.enabled:
+            self.irq.add(name, use_loc_if_exists=True)
+
+        # Dynamic IP (if enabled).
+        if dynamic_ip:
+            assert local_ip is None
+            self.add_constant("ETH_DYNAMIC_IP")
+
+        # Local/Remote IP Configuration (optional).
+        if local_ip:
+            add_ip_address_constants(self, "LOCALIP", local_ip)
+        if remote_ip:
+            add_ip_address_constants(self, "REMOTEIP", remote_ip)
+        if mac_address:
+            add_mac_address_constants(self, "MACADDR", mac_address)
+
 
         # Software Debug
         if software_debug:
@@ -2245,11 +2343,11 @@ class LiteXSoC(SoC):
         spiram.add_module(name="phy", module=spiram_phy)
         self.add_module(name=name, module=spiram)
         spiram_region = SoCRegion(origin=self.mem_map.get(name, None), size=module.total_size, mode="rwx")
-        
+
         # Create Wishbone Slave.
         wb_spiram = wishbone.Interface(data_width=32, address_width=32, addressing="word")
         self.bus.add_slave(name=name, slave=wb_spiram, region=spiram_region, strip_origin=True)
-        
+
         # L2 Cache
         if l2_cache_size != 0:
             # Insert L2 cache inbetween Wishbone bus and LiteSPI
