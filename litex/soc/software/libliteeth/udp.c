@@ -9,7 +9,7 @@
 #include <generated/mem.h>
 #include <generated/soc.h>
 
-#ifdef CSR_ETHMAC_BASE
+#if defined(CSR_ETHMAC_BASE) || defined(ETHMAC_DMA)
 
 #include <stdio.h>
 
@@ -142,6 +142,11 @@ typedef union {
 	uint8_t raw[ETHMAC_SLOT_SIZE];
 } ethernet_buffer;
 
+#ifdef ETHMAC_DMA
+static ethernet_buffer rx_buffers[ETHMAC_RX_SLOTS] __attribute__((aligned(ETHMAC_SLOT_SIZE)));
+static ethernet_buffer tx_buffers[ETHMAC_TX_SLOTS] __attribute__((aligned(ETHMAC_SLOT_SIZE)));
+#endif
+
 static uint32_t rxslot;
 static uint32_t rxlen;
 static ethernet_buffer *rxbuffer;
@@ -150,10 +155,41 @@ static uint32_t txslot;
 static uint32_t txlen;
 static ethernet_buffer *txbuffer;
 
+#ifdef ETHMAC_DMA
+static void ethmac_dma_set_host_addr_tx(uint32_t slot, uintptr_t addr)
+{
+	ethmac_tx_slot_write(slot);
+	ethmac_tx_host_addr_lo_write((uint32_t)addr);
+	ethmac_tx_host_addr_hi_write((uint32_t)(addr >> 32));
+}
+
+static void ethmac_dma_set_host_addr_rx(uint32_t slot, uintptr_t addr)
+{
+	ethmac_rx_slot_write(slot);
+	ethmac_rx_host_addr_lo_write((uint32_t)addr);
+	ethmac_rx_host_addr_hi_write((uint32_t)(addr >> 32));
+}
+
+static void ethmac_dma_reclaim_tx(void)
+{
+	uint32_t pending = ethmac_tx_pending_slots_read();
+	if (pending)
+		ethmac_tx_clear_pending_write(pending);
+}
+#endif
+
 static void send_packet(void)
 {
-	/* wait buffer to be available */
+#ifdef ETHMAC_DMA
+	ethmac_dma_reclaim_tx();
+	ethmac_tx_slot_write(txslot);
+	while(!ethmac_tx_ready_read()) {
+		ethmac_dma_reclaim_tx();
+		udp_service();
+	}
+#else
 	while(!(ethmac_sram_reader_ready_read()));
+#endif
 
 	/* fill txbuffer */
 #ifndef HW_PREAMBLE_CRC
@@ -174,14 +210,24 @@ static void send_packet(void)
 	printf("\n");
 #endif
 
-	/* fill slot, length and send */
+	flush_cpu_dcache();
+
+#ifdef ETHMAC_DMA
+	ethmac_tx_slot_write(txslot);
+	ethmac_tx_length_write(txlen);
+	ethmac_tx_start_write(1);
+#else
 	ethmac_sram_reader_slot_write(txslot);
 	ethmac_sram_reader_length_write(txlen);
 	ethmac_sram_reader_start_write(1);
+#endif
 
-	/* update txslot / txbuffer */
 	txslot = (txslot+1)%ETHMAC_TX_SLOTS;
+#ifdef ETHMAC_DMA
+	txbuffer = &tx_buffers[txslot];
+#else
 	txbuffer = (ethernet_buffer *)(ETHMAC_BASE + ETHMAC_SLOT_SIZE * (ETHMAC_RX_SLOTS + txslot));
+#endif
 }
 
 static uint8_t my_mac[6];
@@ -657,8 +703,13 @@ static void process_frame(void)
 void udp_start(const uint8_t *macaddr, uint32_t ip)
 {
 	int i;
+#ifdef ETHMAC_DMA
+	ethmac_tx_clear_pending_write(ethmac_tx_pending_slots_read());
+	ethmac_rx_clear_pending_write(ethmac_rx_pending_slots_read());
+#else
 	ethmac_sram_reader_ev_pending_write(ETHMAC_EV_SRAM_READER);
 	ethmac_sram_writer_ev_pending_write(ETHMAC_EV_SRAM_WRITER);
+#endif
 	udp_set_ip(ip);
 	udp_set_mac(macaddr);
 
@@ -667,11 +718,24 @@ void udp_start(const uint8_t *macaddr, uint32_t ip)
 		cached_mac[i] = 0;
 
 	txslot = 0;
+#ifdef ETHMAC_DMA
+	for(i=0; i<ETHMAC_TX_SLOTS; i++)
+		ethmac_dma_set_host_addr_tx(i, (uintptr_t)&tx_buffers[i]);
+	for(i=0; i<ETHMAC_RX_SLOTS; i++)
+		ethmac_dma_set_host_addr_rx(i, (uintptr_t)&rx_buffers[i]);
+	ethmac_rx_enable_write(1);
+	txbuffer = &tx_buffers[txslot];
+#else
 	ethmac_sram_reader_slot_write(txslot);
 	txbuffer = (ethernet_buffer *)(ETHMAC_BASE + ETHMAC_SLOT_SIZE * (ETHMAC_RX_SLOTS + txslot));
+#endif
 
 	rxslot = 0;
+#ifdef ETHMAC_DMA
+	rxbuffer = &rx_buffers[rxslot];
+#else
 	rxbuffer = (ethernet_buffer *)(ETHMAC_BASE + ETHMAC_SLOT_SIZE * rxslot);
+#endif
 	rx_callback = (udp_callback)0;
 #ifdef ETH_UDP_BROADCAST
 	bx_callback = (udp_callback)0;
@@ -680,6 +744,23 @@ void udp_start(const uint8_t *macaddr, uint32_t ip)
 
 void udp_service(void)
 {
+#ifdef ETHMAC_DMA
+	uint32_t pending;
+
+	ethmac_dma_reclaim_tx();
+	while((pending = ethmac_rx_pending_slots_read()) != 0) {
+		for(rxslot = 0; rxslot < ETHMAC_RX_SLOTS; rxslot++) {
+			if(!(pending & (1 << rxslot)))
+				continue;
+			ethmac_rx_slot_write(rxslot);
+			rxbuffer = &rx_buffers[rxslot];
+			rxlen = ethmac_rx_pending_length_read();
+			process_frame();
+			ethmac_rx_clear_pending_write(1 << rxslot);
+			break;
+		}
+	}
+#else
 	if(ethmac_sram_writer_ev_pending_read() & ETHMAC_EV_SRAM_WRITER) {
 		rxslot = ethmac_sram_writer_slot_read();
 		rxbuffer = (ethernet_buffer *)(ETHMAC_BASE + ETHMAC_SLOT_SIZE * rxslot);
@@ -687,6 +768,7 @@ void udp_service(void)
 		process_frame();
 		ethmac_sram_writer_ev_pending_write(ETHMAC_EV_SRAM_WRITER);
 	}
+#endif
 }
 
 void eth_init(void)

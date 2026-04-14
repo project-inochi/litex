@@ -31,6 +31,15 @@ def generate_dts_intc(d):
     else:
         return "intc0"
 
+def get_csr_region_size(d, name):
+    base = d["csr_bases"][name]
+    size = 0
+    for reg_name, reg in d.get("csr_registers", {}).items():
+        if not reg_name.startswith(name + "_"):
+            continue
+        size = max(size, (reg["addr"] - base) + reg["size"] * 4)
+    return size if size else 0x4
+
 def generate_dts(d, initrd_start=None, initrd_size=None, initrd=None, root_device=None, polling=False):
     aliases = {}
 
@@ -606,11 +615,46 @@ def generate_dts(d, initrd_start=None, initrd_size=None, initrd=None, root_devic
         ethmac_name = "ethmac" + str(i)
         it_incr = {True: 1, False: 0}[cpu_name == "rocket"]
         if ethphy_name in d["csr_bases"] and ethmac_name in d["csr_bases"]:
-            dts += """
+            ethmac_is_dma = bool(d["constants"].get(ethmac_name + "_dma", d["constants"].get("ethmac_dma", 0)))
+            if ethmac_is_dma:
+                dts += """
+            mac{idx}: mac@{ethmac_csr_base:x} {{
+                compatible = "litex,liteeth-dma";
+                reg = <0x{ethmac_csr_base:x} 0x{ethmac_csr_size:x}>,
+                      <0x{ethphy_csr_base:x} 0x{ethphy_csr_size:x}>;
+                reg-names = "mac", "mdio";
+                litex,rx-slots = <{ethmac_rx_slots}>;
+                litex,tx-slots = <{ethmac_tx_slots}>;
+                litex,slot-size = <{ethmac_slot_size}>;
+                litex,abi-version = <1>;
+                {ethmac_interrupt}
+                {local_mac_addr}
+                status = "okay";
+            }};
+""".format(
+    idx = idx,
+    ethphy_csr_base  = d["csr_bases"][ethphy_name],
+    ethphy_csr_size  = get_csr_region_size(d, ethphy_name),
+    ethmac_csr_base  = d["csr_bases"][ethmac_name],
+    ethmac_csr_size  = get_csr_region_size(d, ethmac_name),
+    ethmac_rx_slots  = d["constants"][ethmac_name + "_rx_slots"],
+    ethmac_tx_slots  = d["constants"][ethmac_name + "_tx_slots"],
+    ethmac_slot_size = d["constants"][ethmac_name + "_slot_size"],
+    ethmac_interrupt = generate_dts_interrupt(d, int(d["constants"][ethmac_name + "_interrupt"]) + it_incr, polling),
+    local_mac_addr   = "" if not "macaddr1" in d["constants"] else "local-mac-address = [{mac_addr}];".format(
+        mac_addr     = "{a1:02X} {a2:02X} {a3:02X} {a4:02X} {a5:02X} {a6:02X}".format(
+            a1       = d["constants"]["macaddr1"],
+            a2       = d["constants"]["macaddr2"],
+            a3       = d["constants"]["macaddr3"],
+            a4       = d["constants"]["macaddr4"],
+            a5       = d["constants"]["macaddr5"],
+            a6       = d["constants"]["macaddr6"])))
+            else:
+                dts += """
             mac{idx}: mac@{ethmac_csr_base:x} {{
                 compatible = "litex,liteeth";
-                reg = <0x{ethmac_csr_base:x} 0x7c>,
-                      <0x{ethphy_csr_base:x} 0x0a>,
+                reg = <0x{ethmac_csr_base:x} 0x{ethmac_csr_size:x}>,
+                      <0x{ethphy_csr_base:x} 0x{ethphy_csr_size:x}>,
                       <0x{ethmac_mem_base:x} 0x{ethmac_mem_size:x}>;
                 reg-names = "mac", "mdio", "buffer";
                 litex,rx-slots = <{ethmac_rx_slots}>;
@@ -623,7 +667,9 @@ def generate_dts(d, initrd_start=None, initrd_size=None, initrd=None, root_devic
 """.format(
     idx = idx,
     ethphy_csr_base  = d["csr_bases"][ethphy_name],
+    ethphy_csr_size  = get_csr_region_size(d, ethphy_name),
     ethmac_csr_base  = d["csr_bases"][ethmac_name],
+    ethmac_csr_size  = get_csr_region_size(d, ethmac_name),
     ethmac_mem_base  = d["memories"][ethmac_name]["base"],
     ethmac_mem_size  = d["memories"][ethmac_name]["size"],
     ethmac_rx_slots  = d["constants"][ethmac_name + "_rx_slots"],

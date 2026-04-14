@@ -1900,6 +1900,10 @@ class LiteXSoC(SoC):
         ntxslots                = 2, txslots_write_only = False,
         full_memory_we          = False,
         with_timestamp          = False,
+        tx_cdc_depth            = 32,
+        tx_cdc_buffered         = False,
+        rx_cdc_depth            = 32,
+        rx_cdc_buffered         = False,
         with_timing_constraints = True,
         local_ip                = None,
         remote_ip               = None,
@@ -1910,13 +1914,14 @@ class LiteXSoC(SoC):
 
         # MAC.
         assert data_width in [8, 32, 64]
+        mac_dw            = {8: 32, 32: 32, 64: 64}[data_width]
         with_sys_datapath = (data_width == 32)
         self.check_if_exists(name)
         if with_timestamp:
             self.timer0.add_uptime()
         ethmac = LiteEthMAC(
             phy               = phy,
-            dw                = {8: 32, 32: 32, 64: 64}[data_width],
+            dw                = mac_dw,
             interface         = "wishbone",
             endianness        = self.cpu.endianness,
             nrxslots          = nrxslots, rxslots_read_only  = rxslots_read_only,
@@ -1924,7 +1929,11 @@ class LiteXSoC(SoC):
             timestamp         = None if not with_timestamp else self.timer0.uptime_cycles,
             full_memory_we    = full_memory_we,
             with_preamble_crc = not software_debug,
-            with_sys_datapath = with_sys_datapath)
+            with_sys_datapath = with_sys_datapath,
+            tx_cdc_depth      = tx_cdc_depth,
+            tx_cdc_buffered   = tx_cdc_buffered,
+            rx_cdc_depth      = rx_cdc_depth,
+            rx_cdc_buffered   = rx_cdc_buffered)
         if not with_sys_datapath:
             # Use PHY's eth_tx/eth_rx clock domains.
             if phy_cd is None:
@@ -2007,6 +2016,10 @@ class LiteXSoC(SoC):
         ntxslots                = 2, txslots_write_only = False,
         full_memory_we          = False,
         with_timestamp          = False,
+        tx_cdc_depth            = 32,
+        tx_cdc_buffered         = False,
+        rx_cdc_depth            = 32,
+        rx_cdc_buffered         = False,
         with_timing_constraints = True,
         local_ip                = None,
         remote_ip               = None,
@@ -2017,25 +2030,24 @@ class LiteXSoC(SoC):
 
         # MAC.
         assert data_width in [8, 32, 64]
+        mac_dw            = {8: 32, 32: 32, 64: 64}[data_width]
         with_sys_datapath = (data_width == 32)
         self.check_if_exists(name)
-        # if with_timestamp:
-        #     self.timer0.add_uptime()
         bus_write = wishbone.Interface(
-            data_width = self.bus.data_width,
+            data_width = mac_dw,
             adr_width  = self.bus.get_address_width(standard="wishbone"),
             addressing = "word",
             mode       = "w",
         )
         bus_read = wishbone.Interface(
-            data_width = self.bus.data_width,
+            data_width = mac_dw,
             adr_width  = self.bus.get_address_width(standard="wishbone"),
             addressing = "word",
             mode       = "r",
         )
         ethmac = LiteEthMAC(
             phy               = phy,
-            dw                = {8: 32, 32: 32, 64: 64}[data_width],
+            dw                = mac_dw,
             bus_write         = bus_write,
             bus_read          = bus_read,
             interface         = "wishbone",
@@ -2046,6 +2058,10 @@ class LiteXSoC(SoC):
             full_memory_we    = full_memory_we,
             with_preamble_crc = not software_debug,
             with_sys_datapath = with_sys_datapath,
+            tx_cdc_depth      = tx_cdc_depth,
+            tx_cdc_buffered   = tx_cdc_buffered,
+            rx_cdc_depth      = rx_cdc_depth,
+            rx_cdc_buffered   = rx_cdc_buffered,
             with_dma          = True)
         if not with_sys_datapath:
             # Use PHY's eth_tx/eth_rx clock domains.
@@ -2060,8 +2076,9 @@ class LiteXSoC(SoC):
                 "eth_rx": eth_rx_clk_name})(ethmac)
         self.add_module(name=name, module=ethmac)
 
-        self.bus.add_master(name="ethmac_rx", master=bus_read)
-        self.bus.add_master(name="ethmac_tx", master=bus_write)
+        dma_bus = getattr(self, "dma_bus", self.bus)
+        dma_bus.add_master(name=f"{name}_rx", master=bus_write)
+        dma_bus.add_master(name=f"{name}_tx", master=bus_read)
 
         # Add IRQs (if enabled).
         if self.irq.enabled:
@@ -2071,6 +2088,8 @@ class LiteXSoC(SoC):
         if dynamic_ip:
             assert local_ip is None
             self.add_constant("ETH_DYNAMIC_IP")
+        self.add_constant("ETHMAC_DMA")
+        self.add_constant("ETHMAC_ABI_VERSION", 1)
 
         # Local/Remote IP Configuration (optional).
         if local_ip:
