@@ -143,8 +143,46 @@ typedef union {
 } ethernet_buffer;
 
 #ifdef ETHMAC_DMA
+#if defined(MAIN_RAM_BASE) && defined(MAIN_RAM_SIZE)
+static uintptr_t ethmac_dma_buffer_bytes(void)
+{
+	return ((uintptr_t)ETHMAC_RX_SLOTS + (uintptr_t)ETHMAC_TX_SLOTS) * (uintptr_t)ETHMAC_SLOT_SIZE;
+}
+
+static uintptr_t ethmac_dma_buffer_base(void)
+{
+	uintptr_t buffer_bytes = ethmac_dma_buffer_bytes();
+	uintptr_t main_ram_end = (uintptr_t)MAIN_RAM_BASE + (uintptr_t)MAIN_RAM_SIZE;
+
+	/* Reserve BIOS DMA scratch space from the top of main RAM. */
+	return (main_ram_end - buffer_bytes) / ETHMAC_SLOT_SIZE * ETHMAC_SLOT_SIZE;
+}
+
+static ethernet_buffer *ethmac_dma_rx_buffer(uint32_t slot)
+{
+	return (ethernet_buffer *)(ethmac_dma_buffer_base() + (slot * ETHMAC_SLOT_SIZE));
+}
+
+static ethernet_buffer *ethmac_dma_tx_buffer(uint32_t slot)
+{
+	return (ethernet_buffer *)(ethmac_dma_buffer_base() +
+		((uintptr_t)ETHMAC_RX_SLOTS * ETHMAC_SLOT_SIZE) +
+		(slot * ETHMAC_SLOT_SIZE));
+}
+#else
 static ethernet_buffer rx_buffers[ETHMAC_RX_SLOTS] __attribute__((aligned(ETHMAC_SLOT_SIZE)));
 static ethernet_buffer tx_buffers[ETHMAC_TX_SLOTS] __attribute__((aligned(ETHMAC_SLOT_SIZE)));
+
+static ethernet_buffer *ethmac_dma_rx_buffer(uint32_t slot)
+{
+	return &rx_buffers[slot];
+}
+
+static ethernet_buffer *ethmac_dma_tx_buffer(uint32_t slot)
+{
+	return &tx_buffers[slot];
+}
+#endif
 #endif
 
 static uint32_t rxslot;
@@ -210,13 +248,17 @@ static void send_packet(void)
 	printf("\n");
 #endif
 
-	flush_cpu_dcache();
-
 #ifdef ETHMAC_DMA
+	#if defined(MAIN_RAM_BASE) && defined(MAIN_RAM_SIZE)
+	flush_cpu_dcache_range(txbuffer, txlen);
+	#else
+	flush_cpu_dcache();
+	#endif
 	ethmac_tx_slot_write(txslot);
 	ethmac_tx_length_write(txlen);
 	ethmac_tx_start_write(1);
 #else
+	flush_cpu_dcache();
 	ethmac_sram_reader_slot_write(txslot);
 	ethmac_sram_reader_length_write(txlen);
 	ethmac_sram_reader_start_write(1);
@@ -224,7 +266,7 @@ static void send_packet(void)
 
 	txslot = (txslot+1)%ETHMAC_TX_SLOTS;
 #ifdef ETHMAC_DMA
-	txbuffer = &tx_buffers[txslot];
+	txbuffer = ethmac_dma_tx_buffer(txslot);
 #else
 	txbuffer = (ethernet_buffer *)(ETHMAC_BASE + ETHMAC_SLOT_SIZE * (ETHMAC_RX_SLOTS + txslot));
 #endif
@@ -720,11 +762,11 @@ void udp_start(const uint8_t *macaddr, uint32_t ip)
 	txslot = 0;
 #ifdef ETHMAC_DMA
 	for(i=0; i<ETHMAC_TX_SLOTS; i++)
-		ethmac_dma_set_host_addr_tx(i, (uintptr_t)&tx_buffers[i]);
+		ethmac_dma_set_host_addr_tx(i, (uintptr_t)ethmac_dma_tx_buffer(i));
 	for(i=0; i<ETHMAC_RX_SLOTS; i++)
-		ethmac_dma_set_host_addr_rx(i, (uintptr_t)&rx_buffers[i]);
+		ethmac_dma_set_host_addr_rx(i, (uintptr_t)ethmac_dma_rx_buffer(i));
 	ethmac_rx_enable_write(1);
-	txbuffer = &tx_buffers[txslot];
+	txbuffer = ethmac_dma_tx_buffer(txslot);
 #else
 	ethmac_sram_reader_slot_write(txslot);
 	txbuffer = (ethernet_buffer *)(ETHMAC_BASE + ETHMAC_SLOT_SIZE * (ETHMAC_RX_SLOTS + txslot));
@@ -732,7 +774,7 @@ void udp_start(const uint8_t *macaddr, uint32_t ip)
 
 	rxslot = 0;
 #ifdef ETHMAC_DMA
-	rxbuffer = &rx_buffers[rxslot];
+	rxbuffer = ethmac_dma_rx_buffer(rxslot);
 #else
 	rxbuffer = (ethernet_buffer *)(ETHMAC_BASE + ETHMAC_SLOT_SIZE * rxslot);
 #endif
@@ -753,8 +795,11 @@ void udp_service(void)
 			if(!(pending & (1 << rxslot)))
 				continue;
 			ethmac_rx_slot_write(rxslot);
-			rxbuffer = &rx_buffers[rxslot];
+			rxbuffer = ethmac_dma_rx_buffer(rxslot);
 			rxlen = ethmac_rx_pending_length_read();
+			#if defined(MAIN_RAM_BASE) && defined(MAIN_RAM_SIZE)
+			invd_cpu_dcache_range(rxbuffer, rxlen);
+			#endif
 			process_frame();
 			ethmac_rx_clear_pending_write(1 << rxslot);
 			break;

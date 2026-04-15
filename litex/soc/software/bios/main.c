@@ -180,18 +180,20 @@ __attribute__((__used__)) int main(int i, char **c)
 	printf("\n");
 #endif
 
-    sdr_ok = 1;
+	sdr_ok = 1;
 
 #ifdef CSR_HYPERRAM_BASE
-    hyperram_init();
+	hyperram_init();
 #endif
 
 #if defined(CSR_ETHMAC_BASE) || defined(MAIN_RAM_BASE) || defined(CSR_SPIFLASH_BASE)
-    printf("--========== \e[1mInitialization\e[0m ============--\n");
+	printf("--========== \e[1mInitialization\e[0m ============--\n");
 #ifdef CSR_ETHMAC_BASE
 	eth_init();
+#if !defined(ETHMAC_DMA) || !defined(MAIN_RAM_BASE) || !defined(MAIN_RAM_SIZE)
 	net_init();
 	set_idle_hook(udp_service);
+#endif
 #endif
 
 	/* Initialize and test SPIRAM */
@@ -214,6 +216,13 @@ __attribute__((__used__)) int main(int i, char **c)
 #endif
 	if (sdr_ok != 1)
 		printf("Memory initialization failed\n");
+#if defined(CSR_ETHMAC_BASE) && defined(ETHMAC_DMA) && defined(MAIN_RAM_BASE) && defined(MAIN_RAM_SIZE)
+	else {
+		/* MAIN_RAM-backed DMA buffers are only usable after DRAM init succeeds. */
+		net_init();
+		set_idle_hook(udp_service);
+	}
+#endif
 #endif
 
 	/* Initialize and test SPIFLASH */
