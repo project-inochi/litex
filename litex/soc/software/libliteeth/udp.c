@@ -697,7 +697,9 @@ void udp_set_broadcast_callback(udp_callback callback)
 
 static void process_frame(void)
 {
+#ifndef ETHMAC_DMA
 	flush_cpu_dcache();
+#endif
 
 #ifdef ETH_UDP_RX_DEBUG
 	int j;
