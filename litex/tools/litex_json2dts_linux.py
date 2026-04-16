@@ -609,13 +609,55 @@ def generate_dts(d, initrd_start=None, initrd_size=None, initrd=None, root_devic
     uart_interrupt = generate_dts_interrupt(d, int(d["constants"]["uart_interrupt"]) + it_incr, polling))
 
     # Ethernet -------------------------------------------------------------------------------------
+    def _const_flag(constants, key):
+        if key not in constants:
+            return False
+        value = constants[key]
+        if value is None:
+            return True
+        return int(value) != 0
+
+    def _ethmac_const(constants, ethmac_name, suffix, default=None):
+        specific_key = f"{ethmac_name}_{suffix}"
+        shared_key   = f"ethmac_{suffix}"
+        if specific_key in constants:
+            return constants[specific_key]
+        if shared_key in constants:
+            return constants[shared_key]
+        return default
+
     for i in [''] + list(range(0, 10)):
         idx = (0 if i == '' else i)
         ethphy_name = "ethphy" + str(i)
         ethmac_name = "ethmac" + str(i)
         it_incr = {True: 1, False: 0}[cpu_name == "rocket"]
         if ethphy_name in d["csr_bases"] and ethmac_name in d["csr_bases"]:
-            ethmac_is_dma = bool(d["constants"].get(ethmac_name + "_dma", d["constants"].get("ethmac_dma", 0)))
+            ethmac_is_dma = (
+                _const_flag(d["constants"], f"{ethmac_name}_dma") or
+                _const_flag(d["constants"], "ethmac_dma")
+            )
+            fixed_link = ""
+            if _const_flag(d["constants"], f"{ethmac_name}_fixed_link") or _const_flag(d["constants"], "ethmac_fixed_link"):
+                fixed_link_speed = int(_ethmac_const(d["constants"], ethmac_name, "fixed_link_speed", 1000))
+                fixed_link += """
+                fixed-link {{
+                    speed = <{fixed_link_speed}>;
+""".format(fixed_link_speed=fixed_link_speed)
+                if _const_flag(d["constants"], f"{ethmac_name}_fixed_link_full_duplex") or _const_flag(d["constants"], "ethmac_fixed_link_full_duplex"):
+                    fixed_link += """
+                    full-duplex;
+"""
+                if _const_flag(d["constants"], f"{ethmac_name}_fixed_link_pause") or _const_flag(d["constants"], "ethmac_fixed_link_pause"):
+                    fixed_link += """
+                    pause;
+"""
+                if _const_flag(d["constants"], f"{ethmac_name}_fixed_link_asym_pause") or _const_flag(d["constants"], "ethmac_fixed_link_asym_pause"):
+                    fixed_link += """
+                    asym-pause;
+"""
+                fixed_link += """
+                };
+"""
             if ethmac_is_dma:
                 dts += """
             mac{idx}: mac@{ethmac_csr_base:x} {{
@@ -630,6 +672,7 @@ def generate_dts(d, initrd_start=None, initrd_size=None, initrd=None, root_devic
                 {ethmac_interrupt}
                 {local_mac_addr}
                 status = "okay";
+                {fixed_link}
             }};
 """.format(
     idx = idx,
@@ -648,7 +691,8 @@ def generate_dts(d, initrd_start=None, initrd_size=None, initrd=None, root_devic
             a3       = d["constants"]["macaddr3"],
             a4       = d["constants"]["macaddr4"],
             a5       = d["constants"]["macaddr5"],
-            a6       = d["constants"]["macaddr6"])))
+            a6       = d["constants"]["macaddr6"])),
+            fixed_link = fixed_link)
             else:
                 dts += """
             mac{idx}: mac@{ethmac_csr_base:x} {{
@@ -663,6 +707,7 @@ def generate_dts(d, initrd_start=None, initrd_size=None, initrd=None, root_devic
                 {ethmac_interrupt}
                 {local_mac_addr}
                 status = "okay";
+                {fixed_link}
             }};
 """.format(
     idx = idx,
@@ -683,7 +728,8 @@ def generate_dts(d, initrd_start=None, initrd_size=None, initrd=None, root_devic
             a3       = d["constants"]["macaddr3"],
             a4       = d["constants"]["macaddr4"],
             a5       = d["constants"]["macaddr5"],
-            a6       = d["constants"]["macaddr6"])))
+            a6       = d["constants"]["macaddr6"])),
+    fixed_link = fixed_link)
 
     # USB OHCI -------------------------------------------------------------------------------------
 

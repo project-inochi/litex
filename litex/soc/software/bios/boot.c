@@ -42,6 +42,36 @@
 
 extern void boot_helper(unsigned long r1, unsigned long r2, unsigned long r3, unsigned long addr);
 
+#if defined(CSR_ETHMAC_BASE) && defined(ETHMAC_DMA)
+static void ethmac_dma_handoff_quiesce(void)
+{
+#ifdef CSR_ETHMAC_RX_ENABLE_ADDR
+	/* Prevent new RX slots from being armed before Linux takes over. */
+	ethmac_rx_enable_write(0);
+#endif
+#ifdef CSR_ETHMAC_TX_EV_ENABLE_ADDR
+	ethmac_tx_ev_enable_write(0);
+#endif
+#ifdef CSR_ETHMAC_RX_EV_ENABLE_ADDR
+	ethmac_rx_ev_enable_write(0);
+#endif
+#ifdef CSR_ETHMAC_TX_CLEAR_PENDING_ADDR
+	ethmac_tx_clear_pending_write(ethmac_tx_pending_slots_read());
+#endif
+#ifdef CSR_ETHMAC_RX_CLEAR_PENDING_ADDR
+	ethmac_rx_clear_pending_write(ethmac_rx_pending_slots_read());
+#endif
+	/* Let any in-flight Wishbone writes drain before jumping to Linux. */
+	busy_wait(1);
+#ifdef CSR_ETHMAC_TX_CLEAR_PENDING_ADDR
+	ethmac_tx_clear_pending_write(ethmac_tx_pending_slots_read());
+#endif
+#ifdef CSR_ETHMAC_RX_CLEAR_PENDING_ADDR
+	ethmac_rx_clear_pending_write(ethmac_rx_pending_slots_read());
+#endif
+}
+#endif
+
 void __attribute__((noreturn)) boot(unsigned long r1, unsigned long r2, unsigned long r3, unsigned long addr)
 {
 	printf("Executing booted program at 0x%08lx\n\n", addr);
@@ -52,6 +82,9 @@ void __attribute__((noreturn)) boot(unsigned long r1, unsigned long r2, unsigned
 #ifdef CONFIG_CPU_HAS_INTERRUPT
 	irq_setmask(0);
 	irq_setie(0);
+#endif
+#if defined(CSR_ETHMAC_BASE) && defined(ETHMAC_DMA)
+	ethmac_dma_handoff_quiesce();
 #endif
 	flush_cpu_icache();
 	flush_cpu_dcache();
