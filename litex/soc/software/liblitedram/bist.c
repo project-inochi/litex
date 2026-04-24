@@ -12,6 +12,7 @@
 #include <liblitedram/bist.h>
 #include <liblitedram/utils.h>
 #include <generated/sdram_phy.h>
+#include <inttypes.h>
 
 #define SDRAM_TEST_BASE 0x00000000
 #define SDRAM_TEST_DATA_BYTES (SDRAM_PHY_DFI_DATABITS / 8 * SDRAM_PHY_PHASES)
