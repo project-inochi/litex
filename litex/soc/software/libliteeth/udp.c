@@ -154,9 +154,7 @@ typedef union {
 #define ETH_RX_BUFFER_BASE(i) \
 	(ETHMAC_DMA_BUFFER_BASE + ((i) + ETHMAC_DMA_SLOT_NUMBER) * ETHMAC_SLOT_SIZE)
 
-static uint32_t tx_submit_tail;
 static uint32_t rx_refill_tail;
-static uint32_t rx_consume_head;
 
 static ethernet_buffer *rx_entry_buffers[ETHMAC_DMA_SLOT_NUMBER];
 
@@ -176,22 +174,22 @@ static void dma_reset(void)
 	ethmac_control_write(1u << CSR_ETHMAC_CONTROL_CLEAR_ERRORS_OFFSET);
 	ethmac_tx_ring_length_write(ETHMAC_DMA_SLOT_NUMBER);
 	ethmac_rx_ring_length_write(ETHMAC_DMA_SLOT_NUMBER);
-	tx_submit_tail = 0;
+	txslot = 0;
 	rx_refill_tail = 0;
-	rx_consume_head = 0;
+	rxslot = 0;
 }
 
 static int dma_tx_slot_available(void)
 {
 	uint32_t tx_head = ethmac_tx_head_read();
-	return ring_next(tx_submit_tail) != tx_head;
+	return ring_next(txslot) != tx_head;
 }
 
 static ethernet_buffer *dma_get_tx_buffer(void)
 {
 	while (!dma_tx_slot_available())
 		;
-	return (ethernet_buffer *)ETH_TX_BUFFER_BASE(tx_submit_tail);
+	return (ethernet_buffer *)ETH_TX_BUFFER_BASE(txslot);
 }
 
 static void prepare_tx_buffer(void)
@@ -228,42 +226,13 @@ static void send_packet(void)
 #ifdef ETHMAC_DMA
 	uint32_t next_tail;
 
-	if (txbuffer == NULL)
-		prepare_tx_buffer();
-
+	prepare_tx_buffer();
 	flush_cpu_dcache();
-
-#ifndef HW_PREAMBLE_CRC
-	uint32_t crc;
-	crc = crc32(&txbuffer->raw[8], txlen-8);
-	txbuffer->raw[txlen  ] = (crc & 0xff);
-	txbuffer->raw[txlen+1] = (crc & 0xff00) >> 8;
-	txbuffer->raw[txlen+2] = (crc & 0xff0000) >> 16;
-	txbuffer->raw[txlen+3] = (crc & 0xff000000) >> 24;
-	txlen += 4;
-#endif
-
-#ifdef ETH_UDP_TX_DEBUG
-	int j;
-	printf(">>>> txlen : %d\n", txlen);
-	for(j=0;j<txlen;j++)
-		printf("%02x",txbuffer->raw[j]);
-	printf("\n");
-#endif
-
-	next_tail = ring_next(tx_submit_tail);
-	ethmac_tx_index_write(tx_submit_tail);
-	ethmac_tx_base_write((uint64_t)(uintptr_t)txbuffer);
-	ethmac_tx_length_write(txlen);
-	ethmac_tx_tail_write(next_tail);
-	tx_submit_tail = next_tail;
-	txbuffer = NULL;
-	return;
 #else
 	/* wait buffer to be available */
 	while(!(ethmac_sram_reader_ready_read()));
+#endif
 
-	/* fill txbuffer */
 #ifndef HW_PREAMBLE_CRC
 	uint32_t crc;
 	crc = crc32(&txbuffer->raw[8], txlen-8);
@@ -282,6 +251,15 @@ static void send_packet(void)
 	printf("\n");
 #endif
 
+#ifdef ETHMAC_DMA
+	next_tail = ring_next(txslot);
+	ethmac_tx_index_write(txslot);
+	ethmac_tx_base_write((uint64_t)(uintptr_t)txbuffer);
+	ethmac_tx_length_write(txlen);
+	ethmac_tx_tail_write(next_tail);
+	txslot = next_tail;
+	txbuffer = NULL;
+#else
 	/* fill slot, length and send */
 	ethmac_sram_reader_slot_write(txslot);
 	ethmac_sram_reader_length_write(txlen);
@@ -800,6 +778,7 @@ void udp_start(const uint8_t *macaddr, uint32_t ip)
 
 #ifdef ETHMAC_DMA
 	dma_reset();
+	txslot = 0;
 	txbuffer = (ethernet_buffer *)ETH_TX_BUFFER_BASE(0);
 	rxbuffer = NULL;
 	rxslot = 0;
@@ -822,9 +801,9 @@ void udp_start(const uint8_t *macaddr, uint32_t ip)
 void udp_service(void)
 {
 #ifdef ETHMAC_DMA
-	while (ethmac_rx_head_read() != rx_consume_head) {
+	while (ethmac_rx_head_read() != rxslot) {
 		uint32_t status;
-		uint32_t completed_entry = rx_consume_head;
+		uint32_t completed_entry = rxslot;
 		ethernet_buffer *completed_buffer = rx_entry_buffers[completed_entry];
 
 		ethmac_rx_index_write(completed_entry);
@@ -836,7 +815,7 @@ void udp_service(void)
 			process_frame();
 
 		dma_submit_rx_entry(completed_buffer);
-		rx_consume_head = ring_next(completed_entry);
+		rxslot = ring_next(completed_entry);
 	}
 #else
 	if(ethmac_sram_writer_ev_pending_read() & ETHMAC_EV_SRAM_WRITER) {
