@@ -214,10 +214,9 @@ static ethernet_buffer *dma_get_tx_buffer(void)
 	return dma_tx_buffer(tx_submit_tail);
 }
 
-static int prepare_tx_buffer(void)
+static void prepare_tx_buffer(void)
 {
 	txbuffer = dma_get_tx_buffer();
-	return txbuffer != NULL;
 }
 
 static void dma_submit_rx_entry(ethernet_buffer *buffer)
@@ -246,8 +245,8 @@ static void send_packet(void)
 #ifdef ETHMAC_DMA
 	uint32_t next_tail;
 
-	if ((txbuffer == NULL) && !prepare_tx_buffer())
-		return;
+	if (txbuffer == NULL)
+		prepare_tx_buffer();
 
 	flush_cpu_dcache();
 
@@ -369,8 +368,7 @@ static void process_arp(void)
 			struct arp_frame *tx_arp;
 
 #ifdef ETHMAC_DMA
-			if (!prepare_tx_buffer())
-				return;
+			prepare_tx_buffer();
 #endif
 			tx_arp = &txbuffer->frame.contents.arp;
 			fill_eth_header(&txbuffer->frame.eth_header,
@@ -416,8 +414,7 @@ int udp_arp_resolve(uint32_t ip)
 
 	for(tries=0;tries<8;tries++) {
 #ifdef ETHMAC_DMA
-		if (!prepare_tx_buffer())
-			return 0;
+		prepare_tx_buffer();
 #endif
 		/* Send an ARP request */
 		fill_eth_header(&txbuffer->frame.eth_header,
@@ -480,8 +477,6 @@ void *udp_get_tx_buffer(void)
 {
 #ifdef ETHMAC_DMA
 	txbuffer = dma_get_tx_buffer();
-	if (txbuffer == NULL)
-		return NULL;
 #endif
 	return txbuffer->frame.contents.udp.payload;
 }
@@ -559,8 +554,7 @@ int send_ping(uint32_t ip, unsigned short payload_length)
 	}
 
 #ifdef ETHMAC_DMA
-	if (!prepare_tx_buffer())
-		return -1;
+	prepare_tx_buffer();
 #endif
 	fill_eth_header(
 		&txbuffer->frame.eth_header,
@@ -635,8 +629,7 @@ static void process_icmp(void)
 	if(rx_icmp->icmp.type == ICMP_ECHO) {
 		struct icmp_frame *tx_icmp;
 #ifdef ETHMAC_DMA
-		if (!prepare_tx_buffer())
-			return;
+		prepare_tx_buffer();
 #endif
 		tx_icmp = &txbuffer->frame.contents.icmp;
 		fill_eth_header(
