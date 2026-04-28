@@ -143,6 +143,14 @@ typedef union {
 	uint8_t raw[ETHMAC_SLOT_SIZE];
 } ethernet_buffer;
 
+static uint32_t rxslot;
+static uint32_t rxlen;
+static ethernet_buffer *rxbuffer;
+
+static uint32_t txslot;
+static uint32_t txlen;
+static ethernet_buffer *txbuffer;
+
 #ifdef ETHMAC_DMA
 #define ETHMAC_DMA_SLOT_NUMBER		4
 #define ETHMAC_DMA_RING_CAPACITY	(ETHMAC_DMA_SLOT_NUMBER - 1)
@@ -212,14 +220,6 @@ static void dma_submit_rx_entry(ethernet_buffer *buffer)
 #define ETH_RX_BUFFER_BASE(i) (ETHMAC_BASE + ETHMAC_SLOT_SIZE * (i))
 #define ETH_TX_BUFFER_BASE(i) (ETHMAC_BASE + ETHMAC_SLOT_SIZE * ((i) + ETHMAC_RX_SLOTS))
 #endif
-
-static uint32_t rxslot;
-static uint32_t rxlen;
-static ethernet_buffer *rxbuffer;
-
-static uint32_t txslot;
-static uint32_t txlen;
-static ethernet_buffer *txbuffer;
 
 static void send_packet(void)
 {
