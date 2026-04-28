@@ -33,6 +33,7 @@ void udp_service(void);
 int send_ping(uint32_t ip, unsigned short payload_length);
 
 void eth_init(void);
+void eth_exit(void);
 void eth_mode(void);
 
 #ifdef __cplusplus

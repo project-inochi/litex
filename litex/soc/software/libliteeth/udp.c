@@ -176,10 +176,28 @@ static int field_is_set(uint32_t value, uint32_t offset)
 	return (value >> offset) & 0x1;
 }
 
+static void dma_control_write(int enable, int reset, int clear_errors)
+{
+	uint32_t value = 0;
+
+#ifdef CSR_ETHMAC_CONTROL_ENABLE_OFFSET
+	if (enable)
+		value |= 1u << CSR_ETHMAC_CONTROL_ENABLE_OFFSET;
+#else
+	(void)enable;
+#endif
+	if (reset)
+		value |= 1u << CSR_ETHMAC_CONTROL_RESET_OFFSET;
+	if (clear_errors)
+		value |= 1u << CSR_ETHMAC_CONTROL_CLEAR_ERRORS_OFFSET;
+
+	ethmac_control_write(value);
+}
+
 static void dma_reset(void)
 {
-	ethmac_control_write(1u << CSR_ETHMAC_CONTROL_RESET_OFFSET);
-	ethmac_control_write(1u << CSR_ETHMAC_CONTROL_CLEAR_ERRORS_OFFSET);
+	dma_control_write(0, 1, 0);
+	dma_control_write(0, 0, 1);
 	ethmac_tx_ring_length_write(ETHMAC_DMA_SLOT_NUMBER);
 	ethmac_rx_ring_length_write(ETHMAC_DMA_SLOT_NUMBER);
 	txslot = 0;
@@ -784,6 +802,7 @@ void udp_start(const uint8_t *macaddr, uint32_t ip)
 	rxslot = 0;
 	for (i = 0; i < ETHMAC_DMA_RING_CAPACITY; i++)
 		dma_submit_rx_entry((ethernet_buffer *)ETH_RX_BUFFER_BASE(i));
+	dma_control_write(1, 0, 0);
 #else
 	txslot = 0;
 	ethmac_sram_reader_slot_write(txslot);
@@ -841,6 +860,13 @@ void eth_init(void)
 #endif
 #ifdef ETHMAC_DMA
 	dma_reset();
+#endif
+}
+
+void eth_exit(void)
+{
+#ifdef ETHMAC_DMA
+	dma_control_write(0, 0, 0);
 #endif
 }
 
