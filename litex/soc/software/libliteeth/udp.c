@@ -12,6 +12,7 @@
 #ifdef CSR_ETHMAC_BASE
 
 #include <stdio.h>
+#include <stdint.h>
 
 #include <system.h>
 
@@ -142,6 +143,96 @@ typedef union {
 	uint8_t raw[ETHMAC_SLOT_SIZE];
 } ethernet_buffer;
 
+#ifdef ETHMAC_DMA
+#define ETHMAC_DMA_ACTIVE_RING_LENGTH   4
+#define ETHMAC_DMA_RING_CAPACITY       (ETHMAC_DMA_ACTIVE_RING_LENGTH - 1)
+
+static uint32_t tx_submit_tail;
+static uint32_t rx_refill_tail;
+static uint32_t rx_consume_head;
+
+static ethernet_buffer *rx_entry_buffers[ETHMAC_DMA_ACTIVE_RING_LENGTH];
+
+static uint32_t ring_next(uint32_t index)
+{
+	return (index + 1) % ETHMAC_DMA_ACTIVE_RING_LENGTH;
+}
+
+static uintptr_t dma_tx_buffer_base(void)
+{
+	uintptr_t main_ram_base = (uintptr_t)MAIN_RAM_BASE;
+	uintptr_t main_ram_size = (uintptr_t)MAIN_RAM_SIZE;
+	uintptr_t total_size    = 2u*ETHMAC_DMA_ACTIVE_RING_LENGTH*(uintptr_t)ETHMAC_SLOT_SIZE;
+
+	return main_ram_base + main_ram_size - total_size;
+}
+
+static uintptr_t dma_rx_buffer_base(void)
+{
+	return dma_tx_buffer_base() +
+		ETHMAC_DMA_ACTIVE_RING_LENGTH*(uintptr_t)ETHMAC_SLOT_SIZE;
+}
+
+static ethernet_buffer *dma_tx_buffer(uint32_t index)
+{
+	return (ethernet_buffer *)(dma_tx_buffer_base() +
+		index*(uintptr_t)ETHMAC_SLOT_SIZE);
+}
+
+static ethernet_buffer *dma_rx_buffer(uint32_t index)
+{
+	return (ethernet_buffer *)(dma_rx_buffer_base() +
+		index*(uintptr_t)ETHMAC_SLOT_SIZE);
+}
+
+static int field_is_set(uint32_t value, uint32_t offset)
+{
+	return (value >> offset) & 0x1;
+}
+
+static void dma_reset(void)
+{
+	ethmac_control_write(1u << CSR_ETHMAC_CONTROL_RESET_OFFSET);
+	ethmac_control_write(1u << CSR_ETHMAC_CONTROL_CLEAR_ERRORS_OFFSET);
+	ethmac_tx_ring_length_write(ETHMAC_DMA_ACTIVE_RING_LENGTH);
+	ethmac_rx_ring_length_write(ETHMAC_DMA_ACTIVE_RING_LENGTH);
+	tx_submit_tail = 0;
+	rx_refill_tail = 0;
+	rx_consume_head = 0;
+}
+
+static int dma_tx_slot_available(void)
+{
+	uint32_t tx_head = ethmac_tx_head_read();
+	return ring_next(tx_submit_tail) != tx_head;
+}
+
+static ethernet_buffer *dma_get_tx_buffer(void)
+{
+	while (!dma_tx_slot_available())
+		;
+	return dma_tx_buffer(tx_submit_tail);
+}
+
+static int prepare_tx_buffer(void)
+{
+	txbuffer = dma_get_tx_buffer();
+	return txbuffer != NULL;
+}
+
+static void dma_submit_rx_entry(ethernet_buffer *buffer)
+{
+	uint32_t next_tail = ring_next(rx_refill_tail);
+
+	ethmac_rx_index_write(rx_refill_tail);
+	ethmac_rx_base_write((uint64_t)(uintptr_t)buffer);
+	ethmac_rx_max_length_write(ETHMAC_SLOT_SIZE);
+	rx_entry_buffers[rx_refill_tail] = buffer;
+	ethmac_rx_tail_write(next_tail);
+	rx_refill_tail = next_tail;
+}
+#endif
+
 static uint32_t rxslot;
 static uint32_t rxlen;
 static ethernet_buffer *rxbuffer;
@@ -152,6 +243,41 @@ static ethernet_buffer *txbuffer;
 
 static void send_packet(void)
 {
+#ifdef ETHMAC_DMA
+	uint32_t next_tail;
+
+	if ((txbuffer == NULL) && !prepare_tx_buffer())
+		return;
+
+	flush_cpu_dcache();
+
+#ifndef HW_PREAMBLE_CRC
+	uint32_t crc;
+	crc = crc32(&txbuffer->raw[8], txlen-8);
+	txbuffer->raw[txlen  ] = (crc & 0xff);
+	txbuffer->raw[txlen+1] = (crc & 0xff00) >> 8;
+	txbuffer->raw[txlen+2] = (crc & 0xff0000) >> 16;
+	txbuffer->raw[txlen+3] = (crc & 0xff000000) >> 24;
+	txlen += 4;
+#endif
+
+#ifdef ETH_UDP_TX_DEBUG
+	int j;
+	printf(">>>> txlen : %d\n", txlen);
+	for(j=0;j<txlen;j++)
+		printf("%02x",txbuffer->raw[j]);
+	printf("\n");
+#endif
+
+	next_tail = ring_next(tx_submit_tail);
+	ethmac_tx_index_write(tx_submit_tail);
+	ethmac_tx_base_write((uint64_t)(uintptr_t)txbuffer);
+	ethmac_tx_length_write(txlen);
+	ethmac_tx_tail_write(next_tail);
+	tx_submit_tail = next_tail;
+	txbuffer = NULL;
+	return;
+#else
 	/* wait buffer to be available */
 	while(!(ethmac_sram_reader_ready_read()));
 
@@ -182,6 +308,7 @@ static void send_packet(void)
 	/* update txslot / txbuffer */
 	txslot = (txslot+1)%ETHMAC_TX_SLOTS;
 	txbuffer = (ethernet_buffer *)(ETHMAC_BASE + ETHMAC_SLOT_SIZE * (ETHMAC_RX_SLOTS + txslot));
+#endif
 }
 
 static uint8_t my_mac[6];
@@ -221,7 +348,6 @@ void udp_set_broadcast(void)
 static void process_arp(void)
 {
 	const struct arp_frame *rx_arp = &rxbuffer->frame.contents.arp;
-	struct arp_frame *tx_arp = &txbuffer->frame.contents.arp;
 
 	if(rxlen < ARP_PACKET_LENGTH) return;
 	if(ntohs(rx_arp->hwtype) != ARP_HWTYPE_ETHERNET) return;
@@ -240,7 +366,13 @@ static void process_arp(void)
 	if(ntohs(rx_arp->opcode) == ARP_OPCODE_REQUEST) {
 		if(ntohl(rx_arp->target_ip) == my_ip) {
 			int i;
+			struct arp_frame *tx_arp;
 
+#ifdef ETHMAC_DMA
+			if (!prepare_tx_buffer())
+				return;
+#endif
+			tx_arp = &txbuffer->frame.contents.arp;
 			fill_eth_header(&txbuffer->frame.eth_header,
 				rx_arp->sender_mac,
 				my_mac,
@@ -283,6 +415,10 @@ int udp_arp_resolve(uint32_t ip)
 		cached_mac[i] = 0;
 
 	for(tries=0;tries<8;tries++) {
+#ifdef ETHMAC_DMA
+		if (!prepare_tx_buffer())
+			return 0;
+#endif
 		/* Send an ARP request */
 		fill_eth_header(&txbuffer->frame.eth_header,
 				broadcast,
@@ -342,6 +478,11 @@ static uint16_t ip_checksum(uint32_t r, void *buffer, uint32_t length, int compl
 
 void *udp_get_tx_buffer(void)
 {
+#ifdef ETHMAC_DMA
+	txbuffer = dma_get_tx_buffer();
+	if (txbuffer == NULL)
+		return NULL;
+#endif
 	return txbuffer->frame.contents.udp.payload;
 }
 
@@ -355,6 +496,10 @@ struct pseudo_header {
 
 int udp_send(uint16_t src_port, uint16_t dst_port, uint32_t length)
 {
+#ifdef ETHMAC_DMA
+	if(txbuffer == NULL)
+		return 0;
+#endif
 	struct pseudo_header h;
 	uint32_t r;
 
@@ -413,6 +558,10 @@ int send_ping(uint32_t ip, unsigned short payload_length)
 		return -1;
 	}
 
+#ifdef ETHMAC_DMA
+	if (!prepare_tx_buffer())
+		return -1;
+#endif
 	fill_eth_header(
 		&txbuffer->frame.eth_header,
 		cached_mac,
@@ -477,7 +626,6 @@ static void process_icmp(void)
 		return;
 
 	const struct icmp_frame *rx_icmp = &rxbuffer->frame.contents.icmp;
-	struct icmp_frame *tx_icmp = &txbuffer->frame.contents.icmp;
 
 	if(ntohs(rx_icmp->ip.total_length) < sizeof(struct icmp_frame))
 		return;
@@ -485,6 +633,12 @@ static void process_icmp(void)
 	unsigned short length = ntohs(rx_icmp->ip.total_length) - sizeof(struct icmp_frame);
 
 	if(rx_icmp->icmp.type == ICMP_ECHO) {
+		struct icmp_frame *tx_icmp;
+#ifdef ETHMAC_DMA
+		if (!prepare_tx_buffer())
+			return;
+#endif
+		tx_icmp = &txbuffer->frame.contents.icmp;
 		fill_eth_header(
 			&txbuffer->frame.eth_header,
 			rxbuffer->frame.eth_header.srcmac,
@@ -657,8 +811,10 @@ static void process_frame(void)
 void udp_start(const uint8_t *macaddr, uint32_t ip)
 {
 	int i;
+#ifndef ETHMAC_DMA
 	ethmac_sram_reader_ev_pending_write(ETHMAC_EV_SRAM_READER);
 	ethmac_sram_writer_ev_pending_write(ETHMAC_EV_SRAM_WRITER);
+#endif
 	udp_set_ip(ip);
 	udp_set_mac(macaddr);
 
@@ -666,12 +822,21 @@ void udp_start(const uint8_t *macaddr, uint32_t ip)
 	for(i=0;i<6;i++)
 		cached_mac[i] = 0;
 
+#ifdef ETHMAC_DMA
+	dma_reset();
+	txbuffer = dma_tx_buffer(0);
+	rxbuffer = NULL;
+	rxslot = 0;
+	for (i = 0; i < ETHMAC_DMA_RING_CAPACITY; i++)
+		dma_submit_rx_entry(dma_rx_buffer(i));
+#else
 	txslot = 0;
 	ethmac_sram_reader_slot_write(txslot);
 	txbuffer = (ethernet_buffer *)(ETHMAC_BASE + ETHMAC_SLOT_SIZE * (ETHMAC_RX_SLOTS + txslot));
 
 	rxslot = 0;
 	rxbuffer = (ethernet_buffer *)(ETHMAC_BASE + ETHMAC_SLOT_SIZE * rxslot);
+#endif
 	rx_callback = (udp_callback)0;
 #ifdef ETH_UDP_BROADCAST
 	bx_callback = (udp_callback)0;
@@ -680,6 +845,24 @@ void udp_start(const uint8_t *macaddr, uint32_t ip)
 
 void udp_service(void)
 {
+#ifdef ETHMAC_DMA
+	while (ethmac_rx_head_read() != rx_consume_head) {
+		uint32_t status;
+		uint32_t completed_entry = rx_consume_head;
+		ethernet_buffer *completed_buffer = rx_entry_buffers[completed_entry];
+
+		ethmac_rx_index_write(completed_entry);
+		status = ethmac_rx_status_read();
+		rxlen  = ethmac_rx_actual_length_read();
+		rxbuffer = completed_buffer;
+
+		if (!field_is_set(status, CSR_ETHMAC_RX_STATUS_ERROR_OFFSET) && (rxlen != 0))
+			process_frame();
+
+		dma_submit_rx_entry(completed_buffer);
+		rx_consume_head = ring_next(completed_entry);
+	}
+#else
 	if(ethmac_sram_writer_ev_pending_read() & ETHMAC_EV_SRAM_WRITER) {
 		rxslot = ethmac_sram_writer_slot_read();
 		rxbuffer = (ethernet_buffer *)(ETHMAC_BASE + ETHMAC_SLOT_SIZE * rxslot);
@@ -687,6 +870,7 @@ void udp_service(void)
 		process_frame();
 		ethmac_sram_writer_ev_pending_write(ETHMAC_EV_SRAM_WRITER);
 	}
+#endif
 }
 
 void eth_init(void)
@@ -699,6 +883,9 @@ void eth_init(void)
 	ethphy_crg_reset_write(0);
 	busy_wait(200);
 #endif
+#endif
+#ifdef ETHMAC_DMA
+	dma_reset();
 #endif
 }
 

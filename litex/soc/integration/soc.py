@@ -498,7 +498,7 @@ class SoCBusHandler(LiteXModule):
         ))
 
         return adapted_interface
-    
+
     # Add Offset ---------------------------------------------------------------------------------
     def add_offset(self, name, interface, offset):
         interface_cls = type(interface)
@@ -1899,6 +1899,12 @@ class LiteXSoC(SoC):
         nrxslots                = 2, rxslots_read_only  = True,
         ntxslots                = 2, txslots_write_only = False,
         full_memory_we          = False,
+        with_dma                = False,
+        dma_endianness          = None,
+        dma_tx_ring_max_entries = 8,
+        dma_rx_ring_max_entries = 8,
+        dma_tx_fifo_depth       = 4,
+        dma_rx_fifo_depth       = 4,
         with_timestamp          = False,
         with_timing_constraints = True,
         local_ip                = None,
@@ -1924,7 +1930,13 @@ class LiteXSoC(SoC):
             timestamp         = None if not with_timestamp else self.timer0.uptime_cycles,
             full_memory_we    = full_memory_we,
             with_preamble_crc = not software_debug,
-            with_sys_datapath = with_sys_datapath)
+            with_sys_datapath = with_sys_datapath,
+            with_dma          = with_dma,
+            dma_endianness    = dma_endianness,
+            dma_tx_ring_max_entries = dma_tx_ring_max_entries,
+            dma_rx_ring_max_entries = dma_rx_ring_max_entries,
+            dma_tx_fifo_depth = dma_tx_fifo_depth,
+            dma_rx_fifo_depth = dma_rx_fifo_depth)
         if not with_sys_datapath:
             # Use PHY's eth_tx/eth_rx clock domains.
             if phy_cd is None:
@@ -1938,32 +1950,39 @@ class LiteXSoC(SoC):
                 "eth_rx": eth_rx_clk_name})(ethmac)
         self.add_module(name=name, module=ethmac)
 
-        # Compute Regions size and add it to the SoC.
-        ethmac_rx_region_size = ethmac.rx_slots.constant*ethmac.slot_size.constant
-        ethmac_tx_region_size = ethmac.tx_slots.constant*ethmac.slot_size.constant
-        ethmac_region_size    = ethmac_rx_region_size + ethmac_tx_region_size
-        self.bus.add_region(name, SoCRegion(
-            origin = self.mem_map.get(name, None),
-            size   = ethmac_region_size,
-            linker = True,
-            cached = False,
-        ))
-        ethmac_rx_region = SoCRegion(
-            origin = self.bus.regions[name].origin + 0,
-            size   = ethmac_rx_region_size,
-            mode= "r" if rxslots_read_only else "rw",
-            linker = False,
-            cached = False,
-        )
-        self.bus.add_slave(name=f"{name}_rx", slave=ethmac.bus_rx, region=ethmac_rx_region)
-        ethmac_tx_region = SoCRegion(
-            origin = self.bus.regions[name].origin + ethmac_rx_region_size,
-            size   = ethmac_tx_region_size,
-            mode   = "w" if txslots_write_only else "rw",
-            linker = False,
-            cached = False,
-        )
-        self.bus.add_slave(name=f"{name}_tx", slave=ethmac.bus_tx, region=ethmac_tx_region)
+        if with_dma:
+            if "main_ram" not in self.bus.regions:
+                raise ValueError("with_dma=True requires a main_ram region")
+            dma_bus = getattr(self, "dma_bus", self.bus)
+            dma_bus.add_master(name=f"{name}_dma_tx", master=ethmac.dma.bus_tx)
+            dma_bus.add_master(name=f"{name}_dma_rx", master=ethmac.dma.bus_rx)
+        else:
+            # Compute Regions size and add it to the SoC.
+            ethmac_rx_region_size = ethmac.rx_slots.constant*ethmac.slot_size.constant
+            ethmac_tx_region_size = ethmac.tx_slots.constant*ethmac.slot_size.constant
+            ethmac_region_size    = ethmac_rx_region_size + ethmac_tx_region_size
+            self.bus.add_region(name, SoCRegion(
+                origin = self.mem_map.get(name, None),
+                size   = ethmac_region_size,
+                linker = True,
+                cached = False,
+            ))
+            ethmac_rx_region = SoCRegion(
+                origin = self.bus.regions[name].origin + 0,
+                size   = ethmac_rx_region_size,
+                mode= "r" if rxslots_read_only else "rw",
+                linker = False,
+                cached = False,
+            )
+            self.bus.add_slave(name=f"{name}_rx", slave=ethmac.bus_rx, region=ethmac_rx_region)
+            ethmac_tx_region = SoCRegion(
+                origin = self.bus.regions[name].origin + ethmac_rx_region_size,
+                size   = ethmac_tx_region_size,
+                mode   = "w" if txslots_write_only else "rw",
+                linker = False,
+                cached = False,
+            )
+            self.bus.add_slave(name=f"{name}_tx", slave=ethmac.bus_tx, region=ethmac_tx_region)
 
         # Add IRQs (if enabled).
         if self.irq.enabled:
@@ -1981,7 +2000,13 @@ class LiteXSoC(SoC):
             add_ip_address_constants(self, "REMOTEIP", remote_ip)
         if mac_address:
             add_mac_address_constants(self, "MACADDR", mac_address)
-        
+
+        if with_dma:
+            assert dma_tx_ring_max_entries > 4
+            assert dma_rx_ring_max_entries > 4
+            self.add_constant("ETHMAC_DMA", 1)
+            self.add_constant("ETHMAC_DMA_TX_RING_MAX_ENTRIES", dma_tx_ring_max_entries)
+            self.add_constant("ETHMAC_DMA_RX_RING_MAX_ENTRIES", dma_rx_ring_max_entries)
 
         # Software Debug
         if software_debug:
@@ -2260,11 +2285,11 @@ class LiteXSoC(SoC):
         spiram.add_module(name="phy", module=spiram_phy)
         self.add_module(name=name, module=spiram)
         spiram_region = SoCRegion(origin=self.mem_map.get(name, None), size=module.total_size, mode="rwx")
-        
+
         # Create Wishbone Slave.
         wb_spiram = wishbone.Interface(data_width=32, address_width=32, addressing="word")
         self.bus.add_slave(name=name, slave=wb_spiram, region=spiram_region, strip_origin=True)
-        
+
         # L2 Cache
         if l2_cache_size != 0:
             # Insert L2 cache inbetween Wishbone bus and LiteSPI

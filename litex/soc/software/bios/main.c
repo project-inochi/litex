@@ -188,11 +188,6 @@ __attribute__((__used__)) int main(int i, char **c)
 
 #if defined(CSR_ETHMAC_BASE) || defined(MAIN_RAM_BASE) || defined(CSR_SPIFLASH_BASE)
     printf("--========== \e[1mInitialization\e[0m ============--\n");
-#ifdef CSR_ETHMAC_BASE
-	eth_init();
-	net_init();
-	set_idle_hook(udp_service);
-#endif
 
 	/* Initialize and test SPIRAM */
 #ifdef CSR_SPIRAM_BASE
@@ -214,6 +209,15 @@ __attribute__((__used__)) int main(int i, char **c)
 #endif
 	if (sdr_ok != 1)
 		printf("Memory initialization failed\n");
+
+#ifdef CSR_ETHMAC_BASE
+	if (sdr_ok == 1) {
+		/* Bring up Ethernet only after main memory initialization. */
+		eth_init();
+		net_init();
+		set_idle_hook(udp_service);
+	}
+#endif
 #endif
 
 	/* Initialize and test SPIFLASH */
