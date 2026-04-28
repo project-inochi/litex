@@ -144,45 +144,25 @@ typedef union {
 } ethernet_buffer;
 
 #ifdef ETHMAC_DMA
-#define ETHMAC_DMA_ACTIVE_RING_LENGTH   4
-#define ETHMAC_DMA_RING_CAPACITY       (ETHMAC_DMA_ACTIVE_RING_LENGTH - 1)
+#define ETHMAC_DMA_SLOT_NUMBER		4
+#define ETHMAC_DMA_RING_CAPACITY	(ETHMAC_DMA_SLOT_NUMBER - 1)
+#define ETHMAC_DMA_BUFFER_BASE		\
+	(MAIN_RAM_BASE + MAIN_RAM_SIZE - 2 * ETHMAC_DMA_SLOT_NUMBER * ETHMAC_SLOT_SIZE)
+
+#define ETH_TX_BUFFER_BASE(i)		\
+	(ETHMAC_DMA_BUFFER_BASE + (i) * ETHMAC_SLOT_SIZE)
+#define ETH_RX_BUFFER_BASE(i) \
+	(ETHMAC_DMA_BUFFER_BASE + ((i) + ETHMAC_DMA_SLOT_NUMBER) * ETHMAC_SLOT_SIZE)
 
 static uint32_t tx_submit_tail;
 static uint32_t rx_refill_tail;
 static uint32_t rx_consume_head;
 
-static ethernet_buffer *rx_entry_buffers[ETHMAC_DMA_ACTIVE_RING_LENGTH];
+static ethernet_buffer *rx_entry_buffers[ETHMAC_DMA_SLOT_NUMBER];
 
 static uint32_t ring_next(uint32_t index)
 {
-	return (index + 1) % ETHMAC_DMA_ACTIVE_RING_LENGTH;
-}
-
-static uintptr_t dma_tx_buffer_base(void)
-{
-	uintptr_t main_ram_base = (uintptr_t)MAIN_RAM_BASE;
-	uintptr_t main_ram_size = (uintptr_t)MAIN_RAM_SIZE;
-	uintptr_t total_size    = 2u*ETHMAC_DMA_ACTIVE_RING_LENGTH*(uintptr_t)ETHMAC_SLOT_SIZE;
-
-	return main_ram_base + main_ram_size - total_size;
-}
-
-static uintptr_t dma_rx_buffer_base(void)
-{
-	return dma_tx_buffer_base() +
-		ETHMAC_DMA_ACTIVE_RING_LENGTH*(uintptr_t)ETHMAC_SLOT_SIZE;
-}
-
-static ethernet_buffer *dma_tx_buffer(uint32_t index)
-{
-	return (ethernet_buffer *)(dma_tx_buffer_base() +
-		index*(uintptr_t)ETHMAC_SLOT_SIZE);
-}
-
-static ethernet_buffer *dma_rx_buffer(uint32_t index)
-{
-	return (ethernet_buffer *)(dma_rx_buffer_base() +
-		index*(uintptr_t)ETHMAC_SLOT_SIZE);
+	return (index + 1) % ETHMAC_DMA_SLOT_NUMBER;
 }
 
 static int field_is_set(uint32_t value, uint32_t offset)
@@ -194,8 +174,8 @@ static void dma_reset(void)
 {
 	ethmac_control_write(1u << CSR_ETHMAC_CONTROL_RESET_OFFSET);
 	ethmac_control_write(1u << CSR_ETHMAC_CONTROL_CLEAR_ERRORS_OFFSET);
-	ethmac_tx_ring_length_write(ETHMAC_DMA_ACTIVE_RING_LENGTH);
-	ethmac_rx_ring_length_write(ETHMAC_DMA_ACTIVE_RING_LENGTH);
+	ethmac_tx_ring_length_write(ETHMAC_DMA_SLOT_NUMBER);
+	ethmac_rx_ring_length_write(ETHMAC_DMA_SLOT_NUMBER);
 	tx_submit_tail = 0;
 	rx_refill_tail = 0;
 	rx_consume_head = 0;
@@ -211,7 +191,7 @@ static ethernet_buffer *dma_get_tx_buffer(void)
 {
 	while (!dma_tx_slot_available())
 		;
-	return dma_tx_buffer(tx_submit_tail);
+	return (ethernet_buffer *)ETH_TX_BUFFER_BASE(tx_submit_tail);
 }
 
 static void prepare_tx_buffer(void)
@@ -820,11 +800,11 @@ void udp_start(const uint8_t *macaddr, uint32_t ip)
 
 #ifdef ETHMAC_DMA
 	dma_reset();
-	txbuffer = dma_tx_buffer(0);
+	txbuffer = (ethernet_buffer *)ETH_TX_BUFFER_BASE(0);
 	rxbuffer = NULL;
 	rxslot = 0;
 	for (i = 0; i < ETHMAC_DMA_RING_CAPACITY; i++)
-		dma_submit_rx_entry(dma_rx_buffer(i));
+		dma_submit_rx_entry((ethernet_buffer *)ETH_RX_BUFFER_BASE(i));
 #else
 	txslot = 0;
 	ethmac_sram_reader_slot_write(txslot);
