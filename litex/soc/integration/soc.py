@@ -1917,122 +1917,7 @@ class LiteXSoC(SoC):
         tx_cdc_buffered         = False,
         rx_cdc_depth            = 32,
         rx_cdc_buffered         = False,
-        with_timing_constraints = True,
-        local_ip                = None,
-        remote_ip               = None,
-        mac_address             = None):
-        # Imports
-        from liteeth.mac import LiteEthMAC
-        from liteeth.phy.model import LiteEthPHYModel
-
-        # MAC.
-        assert data_width in [8, 32, 64]
-        mac_dw            = {8: 32, 32: 32, 64: 64}[data_width]
-        with_sys_datapath = (data_width == 32)
-        self.check_if_exists(name)
-        if with_timestamp:
-            self.timer0.add_uptime()
-        ethmac = LiteEthMAC(
-            phy               = phy,
-            dw                = mac_dw,
-            interface         = "wishbone",
-            endianness        = self.cpu.endianness,
-            nrxslots          = nrxslots, rxslots_read_only  = rxslots_read_only,
-            ntxslots          = ntxslots, txslots_write_only = txslots_write_only,
-            timestamp         = None if not with_timestamp else self.timer0.uptime_cycles,
-            full_memory_we    = full_memory_we,
-            with_preamble_crc = not software_debug,
-            with_sys_datapath = with_sys_datapath,
-            tx_cdc_depth      = tx_cdc_depth,
-            tx_cdc_buffered   = tx_cdc_buffered,
-            rx_cdc_depth      = rx_cdc_depth,
-            rx_cdc_buffered   = rx_cdc_buffered)
-        if not with_sys_datapath:
-            # Use PHY's eth_tx/eth_rx clock domains.
-            if phy_cd is None:
-                eth_tx_clk_name = getattr(phy, "crg", phy).cd_eth_tx.name
-                eth_rx_clk_name = getattr(phy, "crg", phy).cd_eth_rx.name
-            else:
-                eth_tx_clk_name = phy_cd + "_tx"
-                eth_rx_clk_name = phy_cd + "_rx"
-            ethmac = ClockDomainsRenamer({
-                "eth_tx": eth_tx_clk_name,
-                "eth_rx": eth_rx_clk_name})(ethmac)
-        self.add_module(name=name, module=ethmac)
-
-        # Compute Regions size and add it to the SoC.
-        ethmac_rx_region_size = ethmac.rx_slots.constant*ethmac.slot_size.constant
-        ethmac_tx_region_size = ethmac.tx_slots.constant*ethmac.slot_size.constant
-        ethmac_region_size    = ethmac_rx_region_size + ethmac_tx_region_size
-        self.bus.add_region(name, SoCRegion(
-            origin = self.mem_map.get(name, None),
-            size   = ethmac_region_size,
-            linker = True,
-            cached = False,
-        ))
-        ethmac_rx_region = SoCRegion(
-            origin = self.bus.regions[name].origin + 0,
-            size   = ethmac_rx_region_size,
-            mode= "r" if rxslots_read_only else "rw",
-            linker = False,
-            cached = False,
-        )
-        self.bus.add_slave(name=f"{name}_rx", slave=ethmac.bus_rx, region=ethmac_rx_region)
-        ethmac_tx_region = SoCRegion(
-            origin = self.bus.regions[name].origin + ethmac_rx_region_size,
-            size   = ethmac_tx_region_size,
-            mode   = "w" if txslots_write_only else "rw",
-            linker = False,
-            cached = False,
-        )
-        self.bus.add_slave(name=f"{name}_tx", slave=ethmac.bus_tx, region=ethmac_tx_region)
-
-        # Add IRQs (if enabled).
-        if self.irq.enabled:
-            self.irq.add(name, use_loc_if_exists=True)
-
-        # Dynamic IP (if enabled).
-        if dynamic_ip:
-            assert local_ip is None
-            self.add_constant("ETH_DYNAMIC_IP")
-
-        # Local/Remote IP Configuration (optional).
-        if local_ip:
-            add_ip_address_constants(self, "LOCALIP", local_ip)
-        if remote_ip:
-            add_ip_address_constants(self, "REMOTEIP", remote_ip)
-        if mac_address:
-            add_mac_address_constants(self, "MACADDR", mac_address)
-
-
-        # Software Debug
-        if software_debug:
-            self.add_constant("ETH_UDP_TX_DEBUG")
-            self.add_constant("ETH_UDP_RX_DEBUG")
-
-        # Timing constraints
-        if with_timing_constraints:
-            eth_rx_clk = getattr(phy, "crg", phy).cd_eth_rx.clk
-            eth_tx_clk = getattr(phy, "crg", phy).cd_eth_tx.clk
-            if not isinstance(phy, LiteEthPHYModel) and not getattr(phy, "model", False):
-                self.platform.add_period_constraint(eth_rx_clk, 1e9/phy.rx_clk_freq)
-                if not eth_rx_clk is eth_tx_clk:
-                    self.platform.add_period_constraint(eth_tx_clk, 1e9/phy.tx_clk_freq)
-                    self.platform.add_false_path_constraints(self.crg.cd_sys.clk, eth_rx_clk, eth_tx_clk)
-                else:
-                    self.platform.add_false_path_constraints(self.crg.cd_sys.clk, eth_rx_clk)
-
-    # Add Ethernet ---------------------------------------------------------------------------------
-    def add_ethernet_with_dma(self, name="ethmac", phy=None, phy_cd=None, dynamic_ip=False, software_debug=False,
-        data_width              = 8,
-        nrxslots                = 2, rxslots_read_only  = True,
-        ntxslots                = 2, txslots_write_only = False,
-        full_memory_we          = False,
-        with_timestamp          = False,
-        tx_cdc_depth            = 32,
-        tx_cdc_buffered         = False,
-        rx_cdc_depth            = 32,
-        rx_cdc_buffered         = False,
+        with_dma                = False,
         follow_dma_bus_width    = False,
         dma_coherent            = False,
         with_timing_constraints = True,
@@ -2048,22 +1933,30 @@ class LiteXSoC(SoC):
         mac_dw            = {8: 32, 32: 32, 64: 64}[data_width]
         with_sys_datapath = (data_width == 32)
         self.check_if_exists(name)
-        dma_bus      = getattr(self, "dma_bus", self.bus)
-        dma_host_dw  = mac_dw
-        if follow_dma_bus_width:
-            dma_host_dw = max(mac_dw, getattr(dma_bus, "data_width", mac_dw))
-        bus_write = wishbone.Interface(
-            data_width = dma_host_dw,
-            adr_width  = dma_bus.get_address_width(standard="wishbone"),
-            addressing = "word",
-            mode       = "rw" if dma_host_dw > mac_dw else "w",
-        )
-        bus_read = wishbone.Interface(
-            data_width = dma_host_dw,
-            adr_width  = dma_bus.get_address_width(standard="wishbone"),
-            addressing = "word",
-            mode       = "r",
-        )
+        if not with_dma and (follow_dma_bus_width or dma_coherent):
+            raise ValueError("follow_dma_bus_width/dma_coherent require with_dma=True")
+        if with_timestamp:
+            self.timer0.add_uptime()
+        bus_write = None
+        bus_read  = None
+        dma_bus   = None
+        if with_dma:
+            dma_bus     = getattr(self, "dma_bus", self.bus)
+            dma_host_dw = mac_dw
+            if follow_dma_bus_width:
+                dma_host_dw = max(mac_dw, getattr(dma_bus, "data_width", mac_dw))
+            bus_write = wishbone.Interface(
+                data_width = dma_host_dw,
+                adr_width  = dma_bus.get_address_width(standard="wishbone"),
+                addressing = "word",
+                mode       = "rw" if dma_host_dw > mac_dw else "w",
+            )
+            bus_read = wishbone.Interface(
+                data_width = dma_host_dw,
+                adr_width  = dma_bus.get_address_width(standard="wishbone"),
+                addressing = "word",
+                mode       = "r",
+            )
         ethmac = LiteEthMAC(
             phy               = phy,
             dw                = mac_dw,
@@ -2081,7 +1974,7 @@ class LiteXSoC(SoC):
             tx_cdc_buffered   = tx_cdc_buffered,
             rx_cdc_depth      = rx_cdc_depth,
             rx_cdc_buffered   = rx_cdc_buffered,
-            with_dma          = True)
+            with_dma          = with_dma)
         if not with_sys_datapath:
             # Use PHY's eth_tx/eth_rx clock domains.
             if phy_cd is None:
@@ -2095,8 +1988,36 @@ class LiteXSoC(SoC):
                 "eth_rx": eth_rx_clk_name})(ethmac)
         self.add_module(name=name, module=ethmac)
 
-        dma_bus.add_master(name=f"{name}_rx", master=bus_write)
-        dma_bus.add_master(name=f"{name}_tx", master=bus_read)
+        if with_dma:
+            dma_bus.add_master(name=f"{name}_rx", master=bus_write)
+            dma_bus.add_master(name=f"{name}_tx", master=bus_read)
+        else:
+            # Compute Regions size and add it to the SoC.
+            ethmac_rx_region_size = ethmac.rx_slots.constant*ethmac.slot_size.constant
+            ethmac_tx_region_size = ethmac.tx_slots.constant*ethmac.slot_size.constant
+            ethmac_region_size    = ethmac_rx_region_size + ethmac_tx_region_size
+            self.bus.add_region(name, SoCRegion(
+                origin = self.mem_map.get(name, None),
+                size   = ethmac_region_size,
+                linker = True,
+                cached = False,
+            ))
+            ethmac_rx_region = SoCRegion(
+                origin = self.bus.regions[name].origin + 0,
+                size   = ethmac_rx_region_size,
+                mode= "r" if rxslots_read_only else "rw",
+                linker = False,
+                cached = False,
+            )
+            self.bus.add_slave(name=f"{name}_rx", slave=ethmac.bus_rx, region=ethmac_rx_region)
+            ethmac_tx_region = SoCRegion(
+                origin = self.bus.regions[name].origin + ethmac_rx_region_size,
+                size   = ethmac_tx_region_size,
+                mode   = "w" if txslots_write_only else "rw",
+                linker = False,
+                cached = False,
+            )
+            self.bus.add_slave(name=f"{name}_tx", slave=ethmac.bus_tx, region=ethmac_tx_region)
 
         # Add IRQs (if enabled).
         if self.irq.enabled:
@@ -2106,10 +2027,10 @@ class LiteXSoC(SoC):
         if dynamic_ip:
             assert local_ip is None
             self.add_constant("ETH_DYNAMIC_IP")
-        self.add_constant("ETHMAC_DMA")
-        self.add_constant("ETHMAC_ABI_VERSION", 1)
-        if dma_coherent:
-            self.add_constant("ETHMAC_DMA_COHERENT")
+        if with_dma:
+            self.add_constant("ETHMAC_DMA")
+            if dma_coherent:
+                self.add_constant("ETHMAC_DMA_COHERENT")
 
         # Local/Remote IP Configuration (optional).
         if local_ip:

@@ -669,7 +669,6 @@ def generate_dts(d, initrd_start=None, initrd_size=None, initrd=None, root_devic
                 litex,rx-slots = <{ethmac_rx_slots}>;
                 litex,tx-slots = <{ethmac_tx_slots}>;
                 litex,slot-size = <{ethmac_slot_size}>;
-                litex,abi-version = <1>;
                 {dma_coherent}
                 {ethmac_interrupt}
                 {local_mac_addr}
