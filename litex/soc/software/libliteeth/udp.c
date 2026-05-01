@@ -214,6 +214,25 @@ static void ethmac_dma_reclaim_tx(void)
 	if (pending)
 		ethmac_tx_clear_pending_write(pending);
 }
+
+static inline void ethmac_dma_memory_barrier(void)
+{
+	asm volatile("fence rw, rw" ::: "memory");
+}
+
+static void ethmac_dma_sync_for_device(void *addr, size_t size)
+{
+	flush_cpu_dcache_range(addr, size);
+	flush_l2_cache();
+	ethmac_dma_memory_barrier();
+}
+
+static void ethmac_dma_sync_for_cpu(void *addr, size_t size)
+{
+	ethmac_dma_memory_barrier();
+	invd_cpu_dcache_range(addr, size);
+	ethmac_dma_memory_barrier();
+}
 #endif
 
 static void send_packet(void)
@@ -250,7 +269,7 @@ static void send_packet(void)
 
 #ifdef ETHMAC_DMA
 	#if defined(MAIN_RAM_BASE) && defined(MAIN_RAM_SIZE)
-	flush_cpu_dcache_range(txbuffer, txlen);
+	ethmac_dma_sync_for_device(txbuffer, ETHMAC_SLOT_SIZE);
 	#else
 	flush_cpu_dcache();
 	#endif
@@ -800,7 +819,7 @@ void udp_service(void)
 			rxbuffer = ethmac_dma_rx_buffer(rxslot);
 			rxlen = ethmac_rx_pending_length_read();
 			#if defined(MAIN_RAM_BASE) && defined(MAIN_RAM_SIZE)
-			invd_cpu_dcache_range(rxbuffer, rxlen);
+			ethmac_dma_sync_for_cpu(rxbuffer, ETHMAC_SLOT_SIZE);
 			#endif
 			process_frame();
 			ethmac_rx_clear_pending_write(1 << rxslot);

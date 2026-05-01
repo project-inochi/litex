@@ -235,6 +235,10 @@ class VexiiRiscv(CPU):
         VexiiRiscv.soc_args = SimpleNamespace(**{k:getattr(args,k) for k in VexiiRiscv.soc_keys})
         VexiiRiscv.no_netlist_cache = args.no_netlist_cache
         VexiiRiscv.vexii_args      += " " + args.vexii_args
+        coherent_dma_width = getattr(args, "vexii_litedram_width", 0)
+        if args.with_dma and coherent_dma_width:
+            VexiiRiscv.vexii_args += f" --fetch-l1-mem-data-width-min={coherent_dma_width}"
+            VexiiRiscv.vexii_args += f" --lsu-l1-mem-data-width-min={coherent_dma_width}"
         VexiiRiscv.update_repo      = args.update_repo
 
         md5_hash = hashlib.md5()

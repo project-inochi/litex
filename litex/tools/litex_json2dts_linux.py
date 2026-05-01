@@ -636,6 +636,7 @@ def generate_dts(d, initrd_start=None, initrd_size=None, initrd=None, root_devic
                 _const_flag(d["constants"], f"{ethmac_name}_dma") or
                 _const_flag(d["constants"], "ethmac_dma")
             )
+            dma_coherent = "dma-coherent;" if _const_flag(d["constants"], "ethmac_dma_coherent") else ""
             fixed_link = ""
             if _const_flag(d["constants"], f"{ethmac_name}_fixed_link") or _const_flag(d["constants"], "ethmac_fixed_link"):
                 fixed_link_speed = int(_ethmac_const(d["constants"], ethmac_name, "fixed_link_speed", 1000))
@@ -669,6 +670,7 @@ def generate_dts(d, initrd_start=None, initrd_size=None, initrd=None, root_devic
                 litex,tx-slots = <{ethmac_tx_slots}>;
                 litex,slot-size = <{ethmac_slot_size}>;
                 litex,abi-version = <1>;
+                {dma_coherent}
                 {ethmac_interrupt}
                 {local_mac_addr}
                 status = "okay";
@@ -683,6 +685,7 @@ def generate_dts(d, initrd_start=None, initrd_size=None, initrd=None, root_devic
     ethmac_rx_slots  = d["constants"][ethmac_name + "_rx_slots"],
     ethmac_tx_slots  = d["constants"][ethmac_name + "_tx_slots"],
     ethmac_slot_size = d["constants"][ethmac_name + "_slot_size"],
+    dma_coherent    = dma_coherent,
     ethmac_interrupt = generate_dts_interrupt(d, int(d["constants"][ethmac_name + "_interrupt"]) + it_incr, polling),
     local_mac_addr   = "" if not "macaddr1" in d["constants"] else "local-mac-address = [{mac_addr}];".format(
         mac_addr     = "{a1:02X} {a2:02X} {a3:02X} {a4:02X} {a5:02X} {a6:02X}".format(

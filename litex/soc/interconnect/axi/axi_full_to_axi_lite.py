@@ -124,7 +124,7 @@ class AXI2AXILite(LiteXModule):
 # AXI-Lite to AXI ----------------------------------------------------------------------------------
 
 class AXILite2AXI(LiteXModule):
-    def __init__(self, axi_lite, axi, write_id=0, read_id=0, prot=0, burst_type="INCR"):
+    def __init__(self, axi_lite, axi, write_id=0, read_id=0, prot=0, cache=0b0011, burst_type="INCR"):
         assert isinstance(axi_lite, AXILiteInterface)
         assert isinstance(axi, AXIInterface)
         assert axi_lite.data_width == axi.data_width
@@ -150,7 +150,7 @@ class AXILite2AXI(LiteXModule):
             axi.aw.size.eq(burst_size),
             axi.aw.lock.eq(0),  # Normal access
             axi.aw.prot.eq(prot),
-            axi.aw.cache.eq(0b0011),  # Normal Non-cacheable Bufferable
+            axi.aw.cache.eq(cache),
             axi.aw.qos.eq(0),
             axi.aw.id.eq(write_id),
 
@@ -175,7 +175,7 @@ class AXILite2AXI(LiteXModule):
             axi.ar.size.eq(burst_size),
             axi.ar.lock.eq(0),
             axi.ar.prot.eq(prot),
-            axi.ar.cache.eq(0b0011),
+            axi.ar.cache.eq(cache),
             axi.ar.qos.eq(0),
             axi.ar.id.eq(read_id),
 

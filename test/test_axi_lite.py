@@ -11,6 +11,7 @@ from migen import *
 
 from litex.soc.interconnect.axi import *
 from litex.soc.interconnect import wishbone, csr_bus
+from litex.soc.integration.soc import SoCBusHandler, SoCRegion
 
 # Helpers ------------------------------------------------------------------------------------------
 
@@ -245,6 +246,90 @@ class TestAXILite(unittest.TestCase):
 
     def test_axilite2axi2mem_dw64(self):
         return self.test_axilite2axi2mem(data_width=64)
+
+    def test_soc_bus_axi_cache_override(self):
+        data_width    = 64
+        address_width = 32
+
+        class DUT(Module):
+            def __init__(self):
+                self.bus = SoCBusHandler(
+                    name          = "TestDMABusHandler",
+                    standard      = "axi",
+                    data_width    = data_width,
+                    address_width = address_width,
+                    axi_cache     = 0xf,
+                )
+                self.submodules += self.bus
+                self.wishbone = wishbone.Interface(
+                    data_width = data_width,
+                    adr_width  = address_width - log2_int(data_width//8),
+                    addressing = "word",
+                )
+                self.axi = AXIInterface(data_width=data_width, address_width=address_width, id_width=4)
+                self.bus.add_master(name="wishbone_master", master=self.wishbone)
+                self.bus.add_slave(
+                    name   = "axi_slave",
+                    slave  = self.axi,
+                    region = SoCRegion(origin=0x00000000, size=0x1000),
+                )
+
+        def axi_write_sink(axi, captures):
+            got_aw = False
+            got_w  = False
+            yield axi.aw.ready.eq(1)
+            yield axi.w.ready.eq(1)
+            while not (got_aw and got_w):
+                if not got_aw and (yield axi.aw.valid):
+                    captures["aw_cache"] = (yield axi.aw.cache)
+                    got_aw = True
+                if not got_w and (yield axi.w.valid):
+                    captures["w_strb"] = (yield axi.w.strb)
+                    got_w = True
+                yield
+            yield axi.aw.ready.eq(0)
+            yield axi.w.ready.eq(0)
+            yield axi.b.resp.eq(RESP_OKAY)
+            yield axi.b.valid.eq(1)
+            yield
+            while not (yield axi.b.ready):
+                yield
+            yield axi.b.valid.eq(0)
+
+        def axi_read_sink(axi, captures):
+            yield axi.ar.ready.eq(1)
+            while not (yield axi.ar.valid):
+                yield
+            captures["ar_cache"] = (yield axi.ar.cache)
+            yield
+            yield axi.ar.ready.eq(0)
+            yield axi.r.resp.eq(RESP_OKAY)
+            yield axi.r.data.eq(0x0123456789abcdef)
+            yield axi.r.last.eq(1)
+            yield axi.r.valid.eq(1)
+            yield
+            while not (yield axi.r.ready):
+                yield
+            yield axi.r.valid.eq(0)
+
+        def generator(dut):
+            yield from dut.wishbone.write(0x20, 0xfedcba9876543210, sel=0x3c)
+            data = (yield from dut.wishbone.read(0x24))
+            self.assertEqual(data, 0x0123456789abcdef)
+            for _ in range(4):
+                yield
+
+        captures = {}
+        dut = DUT()
+        run_simulation(dut, [
+            generator(dut),
+            axi_write_sink(dut.axi, captures),
+            axi_read_sink(dut.axi, captures),
+            timeout_generator(128),
+        ])
+        self.assertEqual(captures["aw_cache"], 0xf)
+        self.assertEqual(captures["ar_cache"], 0xf)
+        self.assertEqual(captures["w_strb"], 0x3c)
 
     def test_axilite2csr(self):
         @passive

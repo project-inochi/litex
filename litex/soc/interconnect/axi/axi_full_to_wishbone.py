@@ -28,8 +28,8 @@ class AXI2Wishbone(LiteXModule):
 # Wishbone to AXI ----------------------------------------------------------------------------------
 
 class Wishbone2AXI(LiteXModule):
-    def __init__(self, wishbone, axi, base_address=0x00000000):
+    def __init__(self, wishbone, axi, base_address=0x00000000, cache=0b0011):
         axi_lite          = AXILiteInterface(axi.data_width, axi.address_width)
         wishbone2axi_lite = Wishbone2AXILite(wishbone, axi_lite, base_address)
-        axi_lite2axi      = AXILite2AXI(axi_lite, axi)
+        axi_lite2axi      = AXILite2AXI(axi_lite, axi, cache=cache)
         self.submodules += wishbone2axi_lite, axi_lite2axi

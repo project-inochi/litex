@@ -138,7 +138,8 @@ class SoCBusHandler(LiteXModule):
         timeout          = 1e6,
         bursting         = False,
         interconnect     = "shared", interconnect_register=True,
-        reserved_regions = {}
+        reserved_regions = {},
+        axi_cache        = None,
     ):
         self.logger = logging.getLogger(name)
         self.logger.info("Creating Bus Handler...")
@@ -179,6 +180,7 @@ class SoCBusHandler(LiteXModule):
         self.bursting              = bursting
         self.interconnect          = interconnect
         self.interconnect_register = interconnect_register
+        self.axi_cache             = axi_cache
         self.masters               = {}
         self.slaves                = {}
         self.regions               = {}
@@ -443,7 +445,10 @@ class SoCBusHandler(LiteXModule):
                     (axi.AXIInterface,     wishbone.Interface)  : axi.AXI2Wishbone,
                     (ahb.AHBInterface,     wishbone.Interface)  : ahb.AHB2Wishbone,
                 }[type(master), type(slave)]
-                bridge = bridge_cls(master, slave)
+                bridge_kwargs = {}
+                if self.axi_cache is not None and bridge_cls in [axi.Wishbone2AXI, axi.AXILite2AXI]:
+                    bridge_kwargs["cache"] = self.axi_cache
+                bridge = bridge_cls(master, slave, **bridge_kwargs)
                 self.submodules += bridge
                 return adapted_interface
 
@@ -1329,7 +1334,8 @@ class SoC(LiteXModule, SoCCoreCompat):
                     standard         = dma_bus_standard,
                     data_width       = self.cpu.dma_bus.data_width,
                     address_width    = self.cpu.dma_bus.address_width,
-                    bursting         = self.cpu.dma_bus.bursting
+                    bursting         = self.cpu.dma_bus.bursting,
+                    axi_cache        = 0xf if dma_bus_standard == "axi" else None,
                 )
                 self.dma_bus.add_slave(name="dma", slave=self.cpu.dma_bus, region=SoCRegion(origin=0x00000000, size=0x100000000)) # FIXME: covers lower 4GB only
 
@@ -1710,6 +1716,7 @@ class LiteXSoC(SoC):
     def add_sdram(self, name="sdram", phy=None, module=None, origin=None, size=None,
         with_bist               = False,
         with_soc_interconnect   = True,
+        cpu_memory_bus_data_width = None,
         l2_cache_size           = 8192,
         l2_cache_min_data_width = 128,
         l2_cache_reverse        = False,
@@ -1778,9 +1785,15 @@ class LiteXSoC(SoC):
 
         # Add CPU's direct memory buses (if not already declared) ----------------------------------
         if hasattr(self.cpu, "add_memory_buses"):
+            if cpu_memory_bus_data_width is None:
+                cpu_memory_bus_data_width = sdram.crossbar.controller.data_width
+            if cpu_memory_bus_data_width > sdram.crossbar.controller.data_width:
+                raise SoCError("CPU Memory Bus data width cannot be wider than LiteDRAM data width.")
+            if (sdram.crossbar.controller.data_width % cpu_memory_bus_data_width) != 0:
+                raise SoCError("CPU Memory Bus data width must divide LiteDRAM data width.")
             self.cpu.add_memory_buses(
                 address_width = 32,
-                data_width    = sdram.crossbar.controller.data_width
+                data_width    = cpu_memory_bus_data_width
             )
 
         # Connect CPU's direct memory buses to LiteDRAM --------------------------------------------
@@ -2020,6 +2033,8 @@ class LiteXSoC(SoC):
         tx_cdc_buffered         = False,
         rx_cdc_depth            = 32,
         rx_cdc_buffered         = False,
+        follow_dma_bus_width    = False,
+        dma_coherent            = False,
         with_timing_constraints = True,
         local_ip                = None,
         remote_ip               = None,
@@ -2033,15 +2048,19 @@ class LiteXSoC(SoC):
         mac_dw            = {8: 32, 32: 32, 64: 64}[data_width]
         with_sys_datapath = (data_width == 32)
         self.check_if_exists(name)
+        dma_bus      = getattr(self, "dma_bus", self.bus)
+        dma_host_dw  = mac_dw
+        if follow_dma_bus_width:
+            dma_host_dw = max(mac_dw, getattr(dma_bus, "data_width", mac_dw))
         bus_write = wishbone.Interface(
-            data_width = mac_dw,
-            adr_width  = self.bus.get_address_width(standard="wishbone"),
+            data_width = dma_host_dw,
+            adr_width  = dma_bus.get_address_width(standard="wishbone"),
             addressing = "word",
-            mode       = "w",
+            mode       = "rw" if dma_host_dw > mac_dw else "w",
         )
         bus_read = wishbone.Interface(
-            data_width = mac_dw,
-            adr_width  = self.bus.get_address_width(standard="wishbone"),
+            data_width = dma_host_dw,
+            adr_width  = dma_bus.get_address_width(standard="wishbone"),
             addressing = "word",
             mode       = "r",
         )
@@ -2076,7 +2095,6 @@ class LiteXSoC(SoC):
                 "eth_rx": eth_rx_clk_name})(ethmac)
         self.add_module(name=name, module=ethmac)
 
-        dma_bus = getattr(self, "dma_bus", self.bus)
         dma_bus.add_master(name=f"{name}_rx", master=bus_write)
         dma_bus.add_master(name=f"{name}_tx", master=bus_read)
 
@@ -2090,6 +2108,8 @@ class LiteXSoC(SoC):
             self.add_constant("ETH_DYNAMIC_IP")
         self.add_constant("ETHMAC_DMA")
         self.add_constant("ETHMAC_ABI_VERSION", 1)
+        if dma_coherent:
+            self.add_constant("ETHMAC_DMA_COHERENT")
 
         # Local/Remote IP Configuration (optional).
         if local_ip:
